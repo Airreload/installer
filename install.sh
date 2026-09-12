@@ -103,9 +103,10 @@ clone_at_release() {
   local tag=$2
   local expected_commit=$3
   local destination=$4
+  local depth=$5
   local actual_commit
 
-  git clone --quiet --filter=blob:none --depth 1 --single-branch --branch "$tag" -- "$repository" "$destination"
+  git clone --quiet --filter=blob:none --depth "$depth" --single-branch --branch "$tag" -- "$repository" "$destination"
   actual_commit=$(git -C "$destination" rev-parse HEAD)
   [[ "$actual_commit" == "$expected_commit" ]] || die "$repository tag $tag resolved to $actual_commit, expected $expected_commit."
 }
@@ -125,6 +126,12 @@ EOF
 
 validate_installation() {
   local root=$1
+  local flutter_version
+  flutter_version=$("$root/flutter/bin/flutter" --version --machine) || die 'Flutter version validation failed.'
+  grep -Eq '"frameworkVersion"[[:space:]]*:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+[^"[:space:]]*"' <<<"$flutter_version" || die 'Flutter returned an invalid framework version.'
+  if grep -Eq '"frameworkVersion"[[:space:]]*:[[:space:]]*"0\.0\.0-unknown"' <<<"$flutter_version"; then
+    die 'Flutter could not determine its framework version. The release clone is missing its numeric base tag.'
+  fi
   "$root/bin/airreload" version
   "$root/bin/airreload" --help >/dev/null
   "$root/bin/airreload" doctor
@@ -221,9 +228,9 @@ rollback_dir=$(mktemp -d "$install_parent/.airreload-rollback.XXXXXX")
 
 printf 'Installing Airreload into %s\n' "$install_root"
 printf 'Cloning CLI %s...\n' "$cli_tag"
-clone_at_release "$cli_repository" "$cli_tag" "$cli_commit" "$stage_dir/cli"
+clone_at_release "$cli_repository" "$cli_tag" "$cli_commit" "$stage_dir/cli" 1
 printf 'Cloning Flutter %s...\n' "$flutter_tag"
-clone_at_release "$flutter_repository" "$flutter_tag" "$flutter_commit" "$stage_dir/flutter"
+clone_at_release "$flutter_repository" "$flutter_tag" "$flutter_commit" "$stage_dir/flutter" 2
 
 printf 'Bootstrapping Flutter and Dart...\n'
 "$stage_dir/flutter/bin/flutter" --version

@@ -58,12 +58,28 @@ cat >"$fake_bin/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ $1 == clone ]]; then
-  for argument in "$@"; do destination=$argument; done
+  depth=''
+  previous=''
+  for argument in "$@"; do
+    if [[ $previous == --depth ]]; then depth=$argument; fi
+    previous=$argument
+    destination=$argument
+  done
+  if [[ "$destination" == */flutter && $depth != 2 ]]; then
+    printf 'Flutter clone depth must be 2, found %s\n' "$depth" >&2
+    exit 2
+  fi
+  if [[ "$destination" == */cli && $depth != 1 ]]; then
+    printf 'CLI clone depth must be 1, found %s\n' "$depth" >&2
+    exit 2
+  fi
   mkdir -p "$destination/bin"
   if [[ "$destination" == */flutter ]]; then
     cat >"$destination/bin/flutter" <<'FLUTTER'
 #!/usr/bin/env bash
-if [[ ${1:-} == attach && ${2:-} == --help ]]; then
+if [[ ${1:-} == --version && ${2:-} == --machine ]]; then
+  printf '{"frameworkVersion":"%s"}\n' "${FAKE_FLUTTER_FRAMEWORK_VERSION:-3.47.3-0.0.pre-1}"
+elif [[ ${1:-} == attach && ${2:-} == --help ]]; then
   printf 'Usage: flutter attach --airreload\n'
 else
   printf 'Flutter 3.47.2 (fake)\n'
@@ -148,6 +164,13 @@ assert_file "$install_root/preserved"
 
 if FAKE_DART_FAIL_FINAL_DOCTOR=1 run_install --replace >/dev/null 2>&1; then
   fail 'failing final doctor unexpectedly succeeded'
+fi
+assert_file "$install_root/preserved"
+assert_contains "$profile" 'keep-before'
+assert_count 1 "$profile" '# >>> airreload installer >>>'
+
+if FAKE_FLUTTER_FRAMEWORK_VERSION=0.0.0-unknown run_install --replace >/dev/null 2>&1; then
+  fail 'unknown Flutter framework version unexpectedly passed validation'
 fi
 assert_file "$install_root/preserved"
 assert_contains "$profile" 'keep-before'
