@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: bash -n install.sh uninstall.sh tests/test_installer.sh
+      - name: Run ShellCheck
+        run: shellcheck install.sh uninstall.sh tests/test_installer.sh
+      - name: Run isolated tests
+        run: bash tests/test_installer.sh
+
+  real-install:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install from pinned public tags
+        env:
+          AIRRELOAD_INSTALL_ROOT: ${{ runner.temp }}/airreload-smoke
+        run: ./install.sh --no-path
+      - name: Verify commands
+        env:
+          AIRRELOAD_INSTALL_ROOT: ${{ runner.temp }}/airreload-smoke
+        run: |
+          "$AIRRELOAD_INSTALL_ROOT/bin/airreload" version
+          "$AIRRELOAD_INSTALL_ROOT/bin/airreload" --help
+          "$AIRRELOAD_INSTALL_ROOT/bin/airreload" doctor
+      - name: Uninstall cleanly
+        env:
+          AIRRELOAD_INSTALL_ROOT: ${{ runner.temp }}/airreload-smoke
+        run: |
+          ./uninstall.sh --yes
+          test ! -e "$AIRRELOAD_INSTALL_ROOT"
