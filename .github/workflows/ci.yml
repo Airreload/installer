@@ -12,7 +12,7 @@ jobs:
   shell:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check shell syntax
         run: bash -n install.sh uninstall.sh tests/test_installer.sh
       - name: Run ShellCheck
@@ -24,7 +24,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install from pinned public tags
         env:
           AIRRELOAD_INSTALL_ROOT: ${{ runner.temp }}/airreload-smoke
