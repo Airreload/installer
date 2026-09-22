@@ -4,6 +4,11 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
+# Read expected identities from the release manifest so tests follow releases.
+source "$repo_root/versions.env"
+export AIRRELOAD_EXPECTED_CLI_COMMIT="$CLI_COMMIT"
+export AIRRELOAD_EXPECTED_FLUTTER_COMMIT="$FLUTTER_COMMIT"
+export AIRRELOAD_EXPECTED_CLI_VERSION="${CLI_TAG#v}"
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/airreload-installer-tests.XXXXXX")
 trap 'rm -rf -- "$test_root"' EXIT
 fake_bin="$test_root/fake-bin"
@@ -78,11 +83,11 @@ if [[ $1 == clone ]]; then
     cat >"$destination/bin/flutter" <<'FLUTTER'
 #!/usr/bin/env bash
 if [[ ${1:-} == --version && ${2:-} == --machine ]]; then
-  printf '{"frameworkVersion":"%s"}\n' "${FAKE_FLUTTER_FRAMEWORK_VERSION:-3.47.3-0.0.pre-1}"
+  printf '{"frameworkVersion":"%s"}\n' "${FAKE_FLUTTER_FRAMEWORK_VERSION:-3.47.5}"
 elif [[ ${1:-} == attach && ${2:-} == --help ]]; then
   printf 'Usage: flutter attach --airreload\n'
 else
-  printf 'Flutter 3.47.2 (fake)\n'
+  printf 'Flutter 3.47.5 (fake)\n'
 fi
 FLUTTER
     cat >"$destination/bin/dart" <<'DART'
@@ -96,7 +101,7 @@ fi
 command_name=''
 for argument in "$@"; do command_name=$argument; done
 case $command_name in
-  version) printf 'Airreload 0.2.0-beta.1\n' ;;
+  version) printf 'Airreload %s\n' "$AIRRELOAD_EXPECTED_CLI_VERSION" ;;
   --help) printf 'Build and hot reload a Flutter Android app.\n' ;;
   doctor)
     if [[ ${FAKE_DART_FAIL_DOCTOR:-0} == 1 ]]; then exit 1; fi
@@ -116,9 +121,9 @@ DART_SOURCE
 fi
 if [[ $1 == -C && $3 == rev-parse && $4 == HEAD ]]; then
   if [[ $2 == */cli ]]; then
-    printf '%s\n' "${FAKE_CLI_COMMIT:-2b8d25c45ac54a7f28fb165a3e690043ece790e6}"
+    printf '%s\n' "${FAKE_CLI_COMMIT:-$AIRRELOAD_EXPECTED_CLI_COMMIT}"
   else
-    printf '%s\n' '558d79bc24bfcadeff45b93a7d971ae670a1e8fc'
+    printf '%s\n' "$AIRRELOAD_EXPECTED_FLUTTER_COMMIT"
   fi
   exit 0
 fi
@@ -148,7 +153,7 @@ assert_file "$install_root/bin/airreload"
 assert_file "$install_root/cli/.dart_tool/package_config.json"
 assert_contains "$profile" '# >>> airreload installer >>>'
 assert_count 1 "$profile" '# >>> airreload installer >>>'
-"$install_root/bin/airreload" version | grep -F '0.2.0-beta.1' >/dev/null
+"$install_root/bin/airreload" version | grep -F "$AIRRELOAD_EXPECTED_CLI_VERSION" >/dev/null
 
 if run_install >/dev/null 2>&1; then
   fail 'install without --replace unexpectedly succeeded'

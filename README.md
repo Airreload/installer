@@ -65,3 +65,17 @@ bash tests/test_installer.sh
 ```
 
 CI also performs a real clean install from the public pinned tags on Apple Silicon macOS, verifies the command, and tests uninstall cleanup.
+
+## Flutter version preview
+
+This branch installs CLI `0.3.0-beta.1` with a fixed Flutter 3.47.5 runtime.
+The CLI can independently download and select project SDKs for Flutter 3.47.5,
+3.44.9, 3.41.9, or 3.38.10:
+
+```sh
+airreload run --flutter-version 3.38.10
+```
+
+An explicit version bypasses FVM and PATH selection and never falls back.
+These SDK releases are previews pending manual phone acceptance. Selecting an
+older project SDK does not replace the CLI runtime.
