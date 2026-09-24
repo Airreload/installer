@@ -161,6 +161,37 @@ fi
 run_install --replace >/dev/null
 assert_count 1 "$profile" '# >>> airreload installer >>>'
 
+mkdir -p "$install_root/cli/.airreload" "$install_root/sdks/cached-sdk"
+printf 'private-key-fixture\n' >"$install_root/cli/.airreload/host-key.pem"
+printf 'sdk-fixture\n' >"$install_root/sdks/cached-sdk/sentinel"
+cp "$profile" "$test_root/profile-before-update"
+run_install --replace --no-path --preserve-data >/dev/null
+assert_contains "$install_root/cli/.airreload/host-key.pem" 'private-key-fixture'
+assert_contains "$install_root/sdks/cached-sdk/sentinel" 'sdk-fixture'
+cmp "$profile" "$test_root/profile-before-update" || fail 'update changed shell profile'
+if FAKE_DART_FAIL_FINAL_DOCTOR=1 run_install --replace --no-path --preserve-data >/dev/null 2>&1; then
+  fail 'failed preserving update unexpectedly succeeded'
+fi
+assert_contains "$install_root/cli/.airreload/host-key.pem" 'private-key-fixture'
+assert_contains "$install_root/sdks/cached-sdk/sentinel" 'sdk-fixture'
+# Fail after the first preserved directory moved; rollback must return it.
+mv "$install_root/sdks" "$test_root/cached-sdks"
+ln -s "$test_root/cached-sdks" "$install_root/sdks"
+if run_install --replace --no-path --preserve-data >/dev/null 2>&1; then
+  fail 'symlink SDK preservation unexpectedly succeeded'
+fi
+assert_contains "$install_root/cli/.airreload/host-key.pem" 'private-key-fixture'
+assert_contains "$test_root/cached-sdks/cached-sdk/sentinel" 'sdk-fixture'
+rm "$install_root/sdks"
+mv "$test_root/cached-sdks" "$install_root/sdks"
+# A concurrent replacement must not disturb the existing installation.
+mkdir "$test_root/.install.install-lock"
+if run_install --replace >/dev/null 2>&1; then
+  fail 'concurrent replacement unexpectedly succeeded'
+fi
+assert_file "$install_root/cli/.airreload/host-key.pem"
+rmdir "$test_root/.install.install-lock"
+
 printf 'preserve-me\n' >"$install_root/preserved"
 if FAKE_DART_FAIL_DOCTOR=1 run_install --replace >/dev/null 2>&1; then
   fail 'failing staged doctor unexpectedly succeeded'
