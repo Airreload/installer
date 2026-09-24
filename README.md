@@ -44,7 +44,7 @@ Get-Content .\install.ps1, .\versions.env
 .\install.ps1
 ```
 
-The Windows installer creates the same private layout under `%USERPROFILE%\.airreload` and adds its `bin` directory to your user `PATH`. Use `-NoPath` to skip the PATH update, or `-Replace` to replace an installer-owned installation. Open a new PowerShell window after installation.
+The Windows installer creates the same private layout under `%USERPROFILE%\.airreload`, enables Git long path support for your user, and adds its `bin` directory to your user `PATH`. Use `-NoPath` to skip the PATH update, or `-Replace` to replace an installer-owned installation. Open a new PowerShell window after installation.
 
 ## Update or uninstall
 

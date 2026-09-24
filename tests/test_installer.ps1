@@ -12,6 +12,7 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) "airreload-installer-tests.$([g
 $fakeBin = Join-Path $testRoot 'fake-bin'
 $installRoot = Join-Path $testRoot 'install'
 $pathFile = Join-Path $testRoot 'user-path'
+$gitConfigFile = Join-Path $testRoot 'git-config'
 New-Item -ItemType Directory -Path $fakeBin | Out-Null
 Set-Content -LiteralPath $pathFile -Value 'C:\keep-me' -NoNewline
 
@@ -35,6 +36,17 @@ $fakeGit = @'
 $ErrorActionPreference = 'Stop'
 if ($args[0] -eq '-c' -and $args[1] -eq 'core.longpaths=true') {
     $args = @($args[2..($args.Count - 1)])
+}
+if ($args[0] -eq 'config' -and $args[1] -eq '--global' -and $args[2] -eq '--get' -and $args[3] -eq 'core.longpaths') {
+    if (Test-Path -LiteralPath $env:AIRRELOAD_TEST_GIT_CONFIG_FILE) {
+        Get-Content -LiteralPath $env:AIRRELOAD_TEST_GIT_CONFIG_FILE -Raw
+        exit 0
+    }
+    exit 1
+}
+if ($args[0] -eq 'config' -and $args[1] -eq '--global' -and $args[2] -eq 'core.longpaths' -and $args[3] -eq 'true') {
+    Set-Content -LiteralPath $env:AIRRELOAD_TEST_GIT_CONFIG_FILE -Value 'true' -NoNewline
+    exit 0
 }
 if ($args[0] -eq 'clone') {
     $destination = $args[-1]
@@ -98,6 +110,7 @@ $oldPath = $env:Path
 $env:Path = "$fakeBin;$env:Path"
 $env:AIRRELOAD_INSTALL_ROOT = $installRoot
 $env:AIRRELOAD_TEST_USER_PATH_FILE = $pathFile
+$env:AIRRELOAD_TEST_GIT_CONFIG_FILE = $gitConfigFile
 $env:AIRRELOAD_EXPECTED_CLI_COMMIT = $manifest.CLI_COMMIT
 $env:AIRRELOAD_EXPECTED_FLUTTER_COMMIT = $manifest.FLUTTER_COMMIT
 
@@ -106,6 +119,7 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $installRoot '.airreload-installer')) 'ownership marker should exist'
     Assert-True (Test-Path -LiteralPath (Join-Path $installRoot 'bin\airreload.cmd')) 'launcher should exist'
     Assert-True (Test-Path -LiteralPath (Join-Path $installRoot 'cli\.dart_tool\package_config.json')) 'packages should be resolved'
+    Assert-True ((Get-Content -LiteralPath $gitConfigFile -Raw) -eq 'true') 'Git long path support should be enabled'
     $binPath = Join-Path $installRoot 'bin'
     $pathEntries = (Get-Content -LiteralPath $pathFile -Raw) -split ';'
     Assert-True ((@($pathEntries | Where-Object { $_ -ieq $binPath })).Count -eq 1) 'PATH entry should be added once'
@@ -141,6 +155,7 @@ finally {
     $env:Path = $oldPath
     Remove-Item Env:\AIRRELOAD_INSTALL_ROOT -ErrorAction SilentlyContinue
     Remove-Item Env:\AIRRELOAD_TEST_USER_PATH_FILE -ErrorAction SilentlyContinue
+    Remove-Item Env:\AIRRELOAD_TEST_GIT_CONFIG_FILE -ErrorAction SilentlyContinue
     Remove-Item Env:\AIRRELOAD_EXPECTED_CLI_COMMIT -ErrorAction SilentlyContinue
     Remove-Item Env:\AIRRELOAD_EXPECTED_FLUTTER_COMMIT -ErrorAction SilentlyContinue
     Remove-Item Env:\AIRRELOAD_FAKE_CLI_COMMIT -ErrorAction SilentlyContinue

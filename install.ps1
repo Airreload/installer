@@ -58,6 +58,14 @@ function Invoke-GitClone {
     }
 }
 
+function Enable-GitLongPaths {
+    $currentValue = (& git config --global --get core.longpaths 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $currentValue -match '^(?i:true|1|yes|on)$') { return }
+
+    & git config --global core.longpaths true
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to enable Git long path support for this user.' }
+}
+
 function Write-Launcher {
     param([Parameter(Mandatory)][string]$Path)
 
@@ -113,6 +121,7 @@ function Set-UserPath {
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Required command not found: git' }
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Version manifest not found: $manifestPath" }
+Enable-GitLongPaths
 
 $cliRepository = Get-ManifestValue -Name 'CLI_REPOSITORY'
 $cliTag = Get-ManifestValue -Name 'CLI_TAG'
