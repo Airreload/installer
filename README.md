@@ -34,10 +34,28 @@ The launcher runs the CLI source with the installed Flutter fork's Dart runtime.
 
 ## Update or uninstall
 
+Once the installed CLI includes the update command, use:
+
+```sh
+airreload update --check
+airreload update
+```
+
+The CLI checks this repository's `main` manifest for a newer CLI version,
+shows the release comparison and destination, and runs a commit-pinned copy of
+this installer with `--replace --no-path --preserve-data`. The update preserves
+`cli/.airreload` (pairing state) and `sdks` (downloaded project SDKs), including
+when final validation fails and the previous installation is restored. Stop
+Airreload sessions before replacing an installation. Shell profiles stay unchanged.
+Concurrent installer runs for the same destination are rejected using a sibling
+lock directory; if a process is forcibly killed, remove that lock only after
+confirming no installer is still running.
+
+
 After pulling a reviewed installer update, replace an existing installer-owned installation with:
 
 ```sh
-./install.sh --replace
+./install.sh --replace --preserve-data
 ```
 
 Replacement is staged and validated before it becomes active. A failed replacement restores the previous installation and shell profiles. The installer refuses to replace directories that do not carry its ownership marker.
@@ -53,6 +71,17 @@ For non-interactive use, pass `--yes`. The uninstaller refuses to remove an unma
 ## Limitations
 
 Airreload is beta software for local-network hot reload of Flutter Android apps. This installer does not support Intel Macs, Linux, or Windows, and it does not install a standalone compiled CLI binary.
+
+## Publishing updates
+
+Publish the CLI tag and verify its immutable commit, then update `CLI_TAG` and
+`CLI_COMMIT` in `versions.env` on `main` (and the Flutter pins if its runtime
+changes). That manifest is the update channel, including beta releases. A newer
+CLI semantic version makes the release discoverable; changing only the installer
+or Flutter pins does not trigger a CLI update notice. Publish this installer's
+`--preserve-data` support before publishing the first CLI with self-update.
+Older installers reject that flag before replacing anything. Existing users whose
+CLI lacks `update` must perform the manual replacement above once.
 
 ## Contributing
 

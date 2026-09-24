@@ -12,6 +12,9 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 manifest="$script_dir/versions.env"
 replace=0
 setup_path=1
+preserve_data=0
+lock_dir=''
+preserved_paths=()
 stage_dir=''
 backup_dir=''
 rollback_dir=''
@@ -22,10 +25,11 @@ profile_backups=()
 
 usage() {
   cat <<'EOF'
-Usage: ./install.sh [--replace] [--no-path]
+Usage: ./install.sh [--replace] [--no-path] [--preserve-data]
 
   --replace  Replace an installation created by this installer.
   --no-path  Do not add the Airreload launcher directory to shell profiles.
+  --preserve-data  Keep pairing state and downloaded SDKs during replacement.
 EOF
 }
 
@@ -77,10 +81,22 @@ restore_profiles() {
 }
 
 cleanup() {
-  local status=$?
+  local status=$? relative index
   trap - EXIT
   if ((status != 0)); then
     restore_profiles || true
+    if [[ -n "$backup_dir" && -d "$backup_dir" ]]; then
+      for ((index = 0; index < ${#preserved_paths[@]}; index++)); do
+        relative=${preserved_paths[$index]}
+        if [[ -e "$install_root/$relative" && ! -e "$backup_dir/$relative" ]]; then
+          if ! mv -- "$install_root/$relative" "$backup_dir/$relative"; then
+            printf 'Rollback could not restore %s. Keeping both %s and %s for recovery.\n' "$relative" "$install_root" "$backup_dir" >&2
+            if [[ -n "$lock_dir" ]]; then rmdir -- "$lock_dir" || true; fi
+            exit "$status"
+          fi
+        fi
+      done
+    fi
     if ((committed == 1)) && is_owned_dir "$install_root"; then
       remove_owned_dir "$install_root" || true
     fi
@@ -95,6 +111,7 @@ cleanup() {
   if [[ -n "$rollback_dir" && -d "$rollback_dir" ]]; then
     rm -rf -- "$rollback_dir"
   fi
+  if [[ -n "$lock_dir" ]]; then rmdir -- "$lock_dir" || true; fi
   exit "$status"
 }
 
@@ -187,6 +204,7 @@ while (($# > 0)); do
   case $1 in
     --replace) replace=1 ;;
     --no-path) setup_path=0 ;;
+    --preserve-data) preserve_data=1 ;;
     --help|-h) usage; exit 0 ;;
     *) usage >&2; die "Unknown option: $1" ;;
   esac
@@ -215,6 +233,11 @@ install_root=${AIRRELOAD_INSTALL_ROOT:-"$HOME/.airreload"}
 validate_root "$install_root"
 install_parent=$(dirname -- "$install_root")
 mkdir -p -- "$install_parent"
+
+lock_candidate="$install_parent/.$(basename -- "$install_root").install-lock"
+mkdir -- "$lock_candidate" 2>/dev/null || die "Another installation is in progress (lock: $lock_candidate)."
+lock_dir=$lock_candidate
+trap cleanup EXIT
 
 if [[ -e "$install_root" ]]; then
   ((replace == 1)) || die "$install_root already exists. Re-run with --replace to replace an installer-owned installation."
@@ -253,6 +276,17 @@ mv -- "$stage_dir" "$install_root"
 stage_dir=''
 committed=1
 
+if ((preserve_data == 1)) && [[ -n "$backup_dir" ]]; then
+  for relative in cli/.airreload sdks; do
+    if [[ -e "$backup_dir/$relative" || -L "$backup_dir/$relative" ]]; then
+      [[ -d "$backup_dir/$relative" && ! -L "$backup_dir/$relative" ]] || die "Refusing to preserve non-directory data: $relative"
+      [[ ! -e "$install_root/$relative" ]] || die "Staged release unexpectedly contains user data: $relative"
+      preserved_paths+=("$relative")
+      mv -- "$backup_dir/$relative" "$install_root/$relative"
+    fi
+  done
+fi
+
 if ((setup_path == 1)); then
   while IFS= read -r profile; do
     update_profile "$profile"
@@ -269,6 +303,8 @@ fi
 committed=0
 rm -rf -- "$rollback_dir"
 rollback_dir=''
+rmdir -- "$lock_dir"
+lock_dir=''
 trap - EXIT
 
 printf '\nAirreload is installed.\n'
