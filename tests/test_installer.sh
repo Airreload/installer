@@ -5,6 +5,8 @@ IFS=$'\n\t'
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 # Read expected identities from the release manifest so tests follow releases.
+# The manifest path is resolved from the script's location at runtime.
+# shellcheck disable=SC1091
 source "$repo_root/versions.env"
 export AIRRELOAD_EXPECTED_CLI_COMMIT="$CLI_COMMIT"
 export AIRRELOAD_EXPECTED_FLUTTER_COMMIT="$FLUTTER_COMMIT"
