@@ -130,7 +130,7 @@ function Set-UserPath {
     [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
 }
 
-if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Required command not found: git' }
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Required command not found: git. Install Git for Windows, reopen PowerShell, and retry.' }
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Version manifest not found: $manifestPath" }
 Enable-GitLongPaths
 

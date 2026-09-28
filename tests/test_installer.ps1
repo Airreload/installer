@@ -77,10 +77,16 @@ set "last=%~1"
 shift
 goto next
 :run
-if "%last%"=="version" echo Airreload 0.3.0-beta.1& exit /b 0
-if "%last%"=="--help" echo Build and hot reload a Flutter Android app.& exit /b 0
+if "%last%"=="version" goto version
+if "%last%"=="--help" goto help
 if "%last%"=="doctor" goto doctor
 exit /b 2
+:version
+echo Airreload 0.3.0-beta.1
+exit /b 0
+:help
+echo Build and hot reload a Flutter Android app.
+exit /b 0
 :doctor
 if "%AIRRELOAD_FAKE_FAIL_DOCTOR%"=="1" exit /b 1
 echo OK  fake doctor

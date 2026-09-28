@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+  workflow_dispatch:
   push:
     branches: [main]
 
@@ -21,15 +22,16 @@ jobs:
         run: bash tests/test_installer.sh
 
   powershell:
-    runs-on: windows-latest
+    runs-on: windows-2022
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check PowerShell syntax
         shell: powershell
         run: |
-          $allErrors = foreach ($file in @('install.ps1', 'uninstall.ps1', 'tests\test_installer.ps1')) {
+          $allErrors = foreach ($file in (Get-ChildItem -Path . -Filter *.ps1 -Recurse).FullName) {
             $parseErrors = $null
-            [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$null, [ref]$parseErrors)
+            [void][System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$parseErrors)
             $parseErrors
           }
           if ($allErrors) { $allErrors | Format-List; exit 1 }
@@ -61,27 +63,15 @@ jobs:
           test ! -e "$AIRRELOAD_INSTALL_ROOT"
 
   real-install-windows:
-    runs-on: windows-latest
+    name: Windows install (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install from pinned public tags
+      - name: Verify first install, saved PATH, and uninstall with restricted tools
         shell: powershell
-        env:
-          AIRRELOAD_INSTALL_ROOT: ${{ runner.temp }}\airreload-smoke
-        run: .\install.ps1 -NoPath
-      - name: Verify commands
-        shell: powershell
-        env:
-          AIRRELOAD_INSTALL_ROOT: ${{ runner.temp }}\airreload-smoke
-        run: |
-          & "$env:AIRRELOAD_INSTALL_ROOT\bin\airreload.cmd" version
-          & "$env:AIRRELOAD_INSTALL_ROOT\bin\airreload.cmd" --help
-          & "$env:AIRRELOAD_INSTALL_ROOT\bin\airreload.cmd" doctor
-      - name: Uninstall cleanly
-        shell: powershell
-        env:
-          AIRRELOAD_INSTALL_ROOT: ${{ runner.temp }}\airreload-smoke
-        run: |
-          .\uninstall.ps1 -Yes
-          if (Test-Path -LiteralPath $env:AIRRELOAD_INSTALL_ROOT) { throw 'Install root was not removed.' }
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\test_real_install_windows.ps1

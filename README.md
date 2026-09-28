@@ -119,7 +119,7 @@ On Windows, run:
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\test_installer.ps1
 ```
 
-CI also performs a real clean install from the public pinned tags on Apple Silicon macOS, verifies the command, and tests uninstall cleanup.
+CI also installs the public pinned tags on Apple Silicon macOS and hosted Windows runners, verifies the command, and tests uninstall cleanup. See the Windows coverage and limitations below.
 
 ## Flutter version preview
 
@@ -134,3 +134,46 @@ airreload run --flutter-version 3.38.10
 An explicit version bypasses FVM and PATH selection and never falls back.
 These SDK releases are previews pending manual phone acceptance. Selecting an
 older project SDK does not replace the CLI runtime.
+
+### Windows installation CI
+
+Every pull request and push to `main` runs the installer checks. The real Windows
+install job uses explicit `windows-2022` and `windows-2025` x64 hosted images
+(Windows Server 2022/2025), with Windows PowerShell 5.1. These are the supported
+CI environments; they are not Windows 10/11 consumer images. Jobs run independently
+so a failure on one image does not cancel the other. Maintainers must approve
+fork workflow runs when GitHub reports `action_required`; no checks have run yet
+in that state. Require the CI checks to pass before merging manifest or installer
+changes. The workflow also supports manual dispatch once present on `main`.
+
+`tests/test_real_install_windows.ps1` exercises:
+
+- Missing Git on a controlled PATH: a nonzero exit, actionable diagnostic, and no
+  install, staging, Git config, or user PATH changes.
+- A real first install from `versions.env` into a path containing spaces, with a
+  fresh pub cache and Git config. PATH exposes only Windows system tools and Git;
+  preinstalled Dart, Flutter, PowerShell 7, and OpenSSL must not resolve.
+- Real user PATH registration and `airreload version`, `--help`, and `doctor`
+  invoked by name in a fresh PowerShell process. Each command's exit code is
+  checked. The process reloads the saved user PATH because ordinary child
+  processes inherit their parent's environment.
+- Uninstall removal, no leftover staging/backup directories, preservation of
+  unrelated user PATH entries, and no command discovery in a fresh process.
+
+The smoke script temporarily changes the current user's persisted PATH and is
+intended only for disposable Windows CI runners. Its `finally` block restores
+PATH and removes its temporary files even on failure. The isolated test suite
+uses fake tools and a PATH file instead, covering replacement, rollback,
+ownership checks, and pinned-commit mismatches without downloads.
+
+Hosted images still contain SDKs, runtimes, certificates, system configuration,
+and elevated runner accounts. Restricting PATH does not remove those components
+or verify a standard-user desktop login, execution policies, antivirus behavior,
+all prerequisites, or every PC. A genuine minimal consumer-Windows check would
+need a disposable Windows 10/11 VM with only documented prerequisites and a
+standard-user account; this workflow does not provision one. It also does not
+exercise phone pairing, Wi-Fi/firewall connectivity, or hot reload.
+
+These installs test the **pinned released CLI and Flutter**, not current CLI source.
+CLI source CI remains separate. Update the manifest through a PR and obtain green
+installer checks before promoting that manifest as the installation channel.
