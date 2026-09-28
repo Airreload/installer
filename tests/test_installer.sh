@@ -190,9 +190,10 @@ fi
 assert_file "$install_root/sentinel"
 rm -rf -- "$install_root"
 
-if FAKE_CORRUPT_DOWNLOAD=1 run_install >/dev/null 2>&1; then
+if FAKE_CORRUPT_DOWNLOAD=1 run_install >"$test_root/checksum-error" 2>&1; then
   fail 'checksum mismatch unexpectedly succeeded'
 fi
+assert_contains "$test_root/checksum-error" 'binary checksum mismatch'
 assert_not_exists "$install_root"
 
 if FAKE_DOWNLOAD_FAIL=1 run_install >/dev/null 2>&1; then

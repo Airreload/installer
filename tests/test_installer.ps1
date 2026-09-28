@@ -57,6 +57,7 @@ function Invoke-Installer {
         & (Join-Path $repoRoot 'install.ps1') @parameters | Out-Host
         return 0
     } catch {
+        $script:lastInstallError = $_.Exception.Message
         Write-Host "Installer rejected operation: $_"
         return 1
     }
@@ -97,6 +98,9 @@ try {
     foreach ($failure in @('FAKE_CLI_FAIL_HELP', 'FAKE_CLI_FAIL_FINAL_HELP', 'FAKE_CORRUPT_DOWNLOAD', 'FAKE_DOWNLOAD_FAIL', 'FAKE_CLI_VERSION')) {
         [Environment]::SetEnvironmentVariable($failure, '1', 'Process')
         Assert-True ((Invoke-Installer -Arguments @('-Replace', '-PreserveData')) -ne 0) "$failure should reject replacement"
+        if ($failure -eq 'FAKE_CORRUPT_DOWNLOAD') {
+            Assert-True ($script:lastInstallError -match 'binary checksum mismatch') 'corrupt binary must be rejected before execution'
+        }
         [Environment]::SetEnvironmentVariable($failure, $null, 'Process')
         Assert-True ((Get-Content (Join-Path $installRoot 'cli\.airreload\key') -Raw).Trim() -eq 'pairing-fixture') 'pairing state must survive failure'
         Assert-True ((Get-Content (Join-Path $installRoot 'sdks\cached\sentinel') -Raw).Trim() -eq 'sdk-fixture') 'SDK cache must survive failure'
