@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+Add-Type -AssemblyName System.IO.Compression
 
 $sourceRoot = Split-Path -Parent $PSScriptRoot
 $source = Get-Content (Join-Path $sourceRoot 'install.ps1') -Raw
