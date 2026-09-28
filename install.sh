@@ -39,11 +39,11 @@ die() {
 }
 
 manifest_value() {
-  local key=$1 file=${2:-$manifest}
+  local key=$1
   awk -F= -v key="$key" '
     $1 == key { count++; value = substr($0, length(key) + 2) }
     END { if (count != 1) exit 1; print value }
-  ' "$file"
+  ' "$manifest"
 }
 
 validate_root() {
