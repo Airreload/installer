@@ -178,6 +178,7 @@ bash tests/test_installer.sh
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\test_installer.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\test_bootstrap_windows.ps1
 ```
 
 Isolated tests verify real checksums, version checks, source-install migration,

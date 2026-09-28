@@ -39,7 +39,13 @@ function Assert-Clean {
 }
 function New-FixtureArchive {
     Remove-Item -LiteralPath $archiveFile -ErrorAction SilentlyContinue
-    [IO.Compression.ZipFile]::CreateFromDirectory($archiveRoot, $archiveFile)
+    $zip = [IO.Compression.ZipFile]::Open($archiveFile, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($file in Get-ChildItem $archiveInstaller -File) {
+            # Match GitHub's slash-separated ZIP entry names on .NET Framework.
+            [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, "installer-main/$($file.Name)") | Out-Null
+        }
+    } finally { $zip.Dispose() }
 }
 function Assert-Rejected {
     $rejected = $false
