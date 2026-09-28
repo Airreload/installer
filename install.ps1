@@ -10,10 +10,11 @@ $ErrorActionPreference = 'Stop'
 
 $markerContent = 'airreload-installer-v1'
 $manifestPath = $null
-# Invoke-Expression has no installer file. Never use the current directory's
-# manifest when the script was downloaded into memory.
-if ($MyInvocation.MyCommand -is [Management.Automation.ExternalScriptInfo]) {
-    $manifestPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'versions.env'
+# A literal script block records the file that defined this code. Unlike
+# MyInvocation/PSScriptRoot, it cannot inherit a caller's file under IEX.
+$installerSource = ({}).File
+if ($installerSource) {
+    $manifestPath = Join-Path (Split-Path -Parent $installerSource) 'versions.env'
 }
 
 function Invoke-AirreloadBootstrap {
