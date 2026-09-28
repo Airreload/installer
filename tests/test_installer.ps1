@@ -129,7 +129,13 @@ $env:AIRRELOAD_EXPECTED_FLUTTER_COMMIT = $manifest.FLUTTER_COMMIT
 try {
     $longParent = Join-Path $testRoot ('x' * 150)
     $env:AIRRELOAD_INSTALL_ROOT = Join-Path $longParent 'install'
-    Assert-True ((Invoke-Installer) -ne 0) 'overlong Flutter cache paths should fail before bootstrap'
+    $ErrorActionPreference = 'Continue'
+    $longPathOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'install.ps1') 2>&1
+    $longPathExit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    Assert-True ($longPathExit -ne 0) 'overlong Flutter cache paths should fail before bootstrap'
+    Assert-True (($longPathOutput -join "`n") -match 'Installation path is too long') 'overlong paths should explain the failure'
+    Assert-True (($longPathOutput -join "`n") -match 'AIRRELOAD_INSTALL_ROOT') 'overlong paths should explain the remedy'
     Assert-True (-not (Test-Path -LiteralPath $longParent)) 'overlong paths should be rejected before staging writes'
     $env:AIRRELOAD_INSTALL_ROOT = $installRoot
 
