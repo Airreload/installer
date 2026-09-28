@@ -46,6 +46,14 @@ Get-Content .\install.ps1, .\versions.env
 
 The Windows installer creates the same private layout under `%USERPROFILE%\.airreload`, enables Git long path support for your user, and adds its `bin` directory to your user `PATH`. Use `-NoPath` to skip the PATH update, or `-Replace` to replace an installer-owned installation. Open a new PowerShell window after installation.
 
+Keep custom installation paths short. The pinned Flutter runtime can fail while
+listing its deeply nested download cache at the Windows 260-character path
+limit, then repeatedly retry bootstrap. Git long-path support does not fix that
+runtime behavior. The installer rejects destinations whose staged or final
+Flutter cache directory would reach that limit, with a diagnostic requesting a
+shorter `AIRRELOAD_INSTALL_ROOT`. This guard covers the observed cache failure;
+it does not guarantee support for arbitrarily deep project or package paths.
+
 ## Update or uninstall
 
 Once the installed CLI includes the update command, use:

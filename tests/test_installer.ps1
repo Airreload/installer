@@ -8,7 +8,7 @@ Get-Content -LiteralPath (Join-Path $repoRoot 'versions.env') | ForEach-Object {
     $manifest[$name] = $value
 }
 
-$testRoot = Join-Path ([IO.Path]::GetTempPath()) "airreload-installer-tests.$([guid]::NewGuid().ToString('N'))"
+$testRoot = Join-Path ([IO.Path]::GetTempPath()) "ar-test-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 $fakeBin = Join-Path $testRoot 'fake-bin'
 $installRoot = Join-Path $testRoot 'install'
 $pathFile = Join-Path $testRoot 'user-path'
@@ -127,6 +127,12 @@ $env:AIRRELOAD_EXPECTED_CLI_COMMIT = $manifest.CLI_COMMIT
 $env:AIRRELOAD_EXPECTED_FLUTTER_COMMIT = $manifest.FLUTTER_COMMIT
 
 try {
+    $longParent = Join-Path $testRoot ('x' * 150)
+    $env:AIRRELOAD_INSTALL_ROOT = Join-Path $longParent 'install'
+    Assert-True ((Invoke-Installer) -ne 0) 'overlong Flutter cache paths should fail before bootstrap'
+    Assert-True (-not (Test-Path -LiteralPath $longParent)) 'overlong paths should be rejected before staging writes'
+    $env:AIRRELOAD_INSTALL_ROOT = $installRoot
+
     Assert-True ((Invoke-Installer) -eq 0) 'initial install should succeed'
     Assert-True (Test-Path -LiteralPath (Join-Path $installRoot '.airreload-installer')) 'ownership marker should exist'
     Assert-True (Test-Path -LiteralPath (Join-Path $installRoot 'bin\airreload.cmd')) 'launcher should exist'

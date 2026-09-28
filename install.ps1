@@ -158,8 +158,16 @@ if (Test-Path -LiteralPath $installRoot) {
     if (-not (Test-OwnedDirectory -Path $installRoot)) { throw "$installRoot is not owned by the Airreload installer; it was not changed." }
 }
 
-New-Item -ItemType Directory -Path $installParent -Force | Out-Null
 $stageDirectory = Join-Path $installParent ".airreload-install.$([guid]::NewGuid().ToString('N'))"
+# The pinned Flutter bootstrap still fails when enumerating this cache directory
+# at MAX_PATH, even with Git long paths enabled, and its batch wrapper retries.
+$cacheSuffix = 'flutter\bin\cache\downloads\storage.googleapis.com\flutter_infra_release\flutter\' + ('0' * 40) + '\*'
+foreach ($root in @($stageDirectory, $installRoot)) {
+    if ((Join-Path $root $cacheSuffix).Length -ge 260) {
+        throw 'Installation path is too long for the pinned Flutter runtime. Set AIRRELOAD_INSTALL_ROOT to a shorter absolute path and retry.'
+    }
+}
+New-Item -ItemType Directory -Path $installParent -Force | Out-Null
 New-Item -ItemType Directory -Path $stageDirectory | Out-Null
 Set-Content -LiteralPath (Join-Path $stageDirectory '.airreload-installer') -Value $markerContent -NoNewline
 
