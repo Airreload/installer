@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [switch]$Replace,
-    [switch]$NoPath
+    [switch]$NoPath,
+    [switch]$PreserveData
 )
 
 Set-StrictMode -Version Latest
@@ -14,6 +15,7 @@ $backupDirectory = $null
 $installCommitted = $false
 $pathChanged = $false
 $originalUserPath = $null
+$preservedPaths = @()
 
 function Get-ManifestValue {
     param([Parameter(Mandatory)][string]$Name)
@@ -52,62 +54,27 @@ function Move-OwnedDirectory {
     [IO.Directory]::Move($Source, $Destination)
 }
 
-function Invoke-GitClone {
-    param(
-        [Parameter(Mandatory)][string]$Repository,
-        [Parameter(Mandatory)][string]$Tag,
-        [Parameter(Mandatory)][string]$ExpectedCommit,
-        [Parameter(Mandatory)][string]$Destination,
-        [Parameter(Mandatory)][int]$Depth
-    )
+function Install-Binary {
+    param([Parameter(Mandatory)][string]$Destination)
 
-    & git -c core.longpaths=true clone --quiet --filter=blob:none --depth $Depth --single-branch --branch $Tag -- $Repository $Destination
-    if ($LASTEXITCODE -ne 0) { throw "Failed to clone $Repository at $Tag." }
-    $actualCommit = (& git -c core.longpaths=true -C $Destination rev-parse HEAD).Trim()
-    if ($LASTEXITCODE -ne 0 -or $actualCommit -cne $ExpectedCommit) {
-        throw "$Repository tag $Tag resolved to $actualCommit, expected $ExpectedCommit."
-    }
-}
-
-function Enable-GitLongPaths {
-    $currentValue = (& git config --global --get core.longpaths 2>$null)
-    if ($LASTEXITCODE -eq 0 -and $currentValue -match '^(?i:true|1|yes|on)$') { return }
-
-    & git config --global core.longpaths true
-    if ($LASTEXITCODE -ne 0) { throw 'Failed to enable Git long path support for this user.' }
-}
-
-function Write-Launcher {
-    param([Parameter(Mandatory)][string]$Path)
-
-    $content = @'
-@echo off
-setlocal
-set "AIRRELOAD_ROOT=%~dp0.."
-call "%AIRRELOAD_ROOT%\flutter\bin\dart.bat" "--packages=%AIRRELOAD_ROOT%\cli\.dart_tool\package_config.json" "%AIRRELOAD_ROOT%\cli\bin\airreload.dart" %*
-exit /b %ERRORLEVEL%
-'@
-    Set-Content -LiteralPath $Path -Value $content -Encoding Ascii
+    $url = "https://github.com/Airreload/cli/releases/download/$cliTag/airreload-windows-x64.exe"
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri $url -OutFile $Destination -UseBasicParsing -TimeoutSec 300
+    $actualHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -cne $cliSha256) { throw 'Airreload binary checksum mismatch.' }
 }
 
 function Test-Installation {
     param([Parameter(Mandatory)][string]$Root)
 
-    $flutter = Join-Path $Root 'flutter\bin\flutter.bat'
-    $launcher = Join-Path $Root 'bin\airreload.cmd'
-    $versionJson = (& $flutter --version --machine) -join [Environment]::NewLine
-    if ($LASTEXITCODE -ne 0) { throw 'Flutter version validation failed.' }
-    try { $frameworkVersion = ($versionJson | ConvertFrom-Json).frameworkVersion }
-    catch { throw 'Flutter returned invalid version information.' }
-    if ($frameworkVersion -notmatch '^\d+\.\d+\.\d+\S*$' -or $frameworkVersion -eq '0.0.0-unknown') {
-        throw "Flutter returned an invalid framework version: $frameworkVersion"
+    $launcher = Join-Path $Root 'bin\airreload.exe'
+    $version = (& $launcher version) -join [Environment]::NewLine
+    if ($LASTEXITCODE -ne 0 -or $version -cne "Airreload $($cliTag.Substring(1))") {
+        throw "Airreload version validation failed: $version"
     }
-    & $launcher version
-    if ($LASTEXITCODE -ne 0) { throw 'Airreload version validation failed.' }
+    Write-Host $version
     & $launcher --help | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Airreload help validation failed.' }
-    & $launcher doctor
-    if ($LASTEXITCODE -ne 0) { throw 'Airreload doctor validation failed.' }
 }
 
 function Get-UserPath {
@@ -130,21 +97,21 @@ function Set-UserPath {
     [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
 }
 
-if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Required command not found: git. Install Git for Windows, reopen PowerShell, and retry.' }
+if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem -or
+    $env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') {
+    throw 'Airreload currently supports Windows x64 only.'
+}
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Version manifest not found: $manifestPath" }
-Enable-GitLongPaths
 
 $cliRepository = Get-ManifestValue -Name 'CLI_REPOSITORY'
 $cliTag = Get-ManifestValue -Name 'CLI_TAG'
 $cliCommit = Get-ManifestValue -Name 'CLI_COMMIT'
-$flutterRepository = Get-ManifestValue -Name 'FLUTTER_REPOSITORY'
-$flutterTag = Get-ManifestValue -Name 'FLUTTER_TAG'
-$flutterCommit = Get-ManifestValue -Name 'FLUTTER_COMMIT'
+$cliSha256 = Get-ManifestValue -Name 'CLI_SHA256_WINDOWS_X64'
 
 if ($cliRepository -cne 'https://github.com/Airreload/cli.git') { throw 'Unexpected CLI repository in versions.env.' }
-if ($flutterRepository -cne 'https://github.com/Airreload/flutter.git') { throw 'Unexpected Flutter repository in versions.env.' }
-if ($cliTag -notmatch '^[A-Za-z0-9._-]+$' -or $flutterTag -notmatch '^[A-Za-z0-9._-]+$') { throw 'Invalid release tag in versions.env.' }
-if ($cliCommit -notmatch '^[0-9a-f]{40}$' -or $flutterCommit -notmatch '^[0-9a-f]{40}$') { throw 'Invalid commit in versions.env.' }
+if ($cliTag -cnotmatch '^v[0-9A-Za-z.+-]+$') { throw 'Invalid CLI release tag in versions.env.' }
+if ($cliCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'Invalid CLI commit in versions.env.' }
+if ($cliSha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Invalid binary SHA-256 checksum in versions.env.' }
 
 $installRoot = if ($env:AIRRELOAD_INSTALL_ROOT) { $env:AIRRELOAD_INSTALL_ROOT } else { Join-Path $env:USERPROFILE '.airreload' }
 if (-not [IO.Path]::IsPathRooted($installRoot)) { throw 'AIRRELOAD_INSTALL_ROOT must be an absolute path.' }
@@ -159,36 +126,16 @@ if (Test-Path -LiteralPath $installRoot) {
 }
 
 $stageDirectory = Join-Path $installParent ".airreload-install.$([guid]::NewGuid().ToString('N'))"
-# The pinned Flutter bootstrap still fails when enumerating this cache directory
-# at MAX_PATH, even with Git long paths enabled, and its batch wrapper retries.
-$cacheSuffix = 'flutter\bin\cache\downloads\storage.googleapis.com\flutter_infra_release\flutter\' + ('0' * 40) + '\*'
-foreach ($root in @($stageDirectory, $installRoot)) {
-    if ((Join-Path $root $cacheSuffix).Length -ge 260) {
-        throw 'Installation path is too long for the pinned Flutter runtime. Set AIRRELOAD_INSTALL_ROOT to a shorter absolute path and retry.'
-    }
-}
 New-Item -ItemType Directory -Path $installParent -Force | Out-Null
 New-Item -ItemType Directory -Path $stageDirectory | Out-Null
 Set-Content -LiteralPath (Join-Path $stageDirectory '.airreload-installer') -Value $markerContent -NoNewline
 
 try {
     Write-Host "Installing Airreload into $installRoot"
-    Write-Host "Cloning CLI $cliTag..."
-    Invoke-GitClone -Repository $cliRepository -Tag $cliTag -ExpectedCommit $cliCommit -Destination (Join-Path $stageDirectory 'cli') -Depth 1
-    Write-Host "Cloning Flutter $flutterTag..."
-    Invoke-GitClone -Repository $flutterRepository -Tag $flutterTag -ExpectedCommit $flutterCommit -Destination (Join-Path $stageDirectory 'flutter') -Depth 2
-
-    Write-Host 'Bootstrapping Flutter and Dart...'
-    & (Join-Path $stageDirectory 'flutter\bin\flutter.bat') --version
-    if ($LASTEXITCODE -ne 0) { throw 'Flutter bootstrap failed.' }
-    Push-Location (Join-Path $stageDirectory 'cli')
-    try {
-        & (Join-Path $stageDirectory 'flutter\bin\dart.bat') pub get
-        if ($LASTEXITCODE -ne 0) { throw 'Dart package resolution failed.' }
-    }
-    finally { Pop-Location }
+    Write-Host "Downloading Airreload $cliTag..."
     New-Item -ItemType Directory -Path (Join-Path $stageDirectory 'bin') | Out-Null
-    Write-Launcher -Path (Join-Path $stageDirectory 'bin\airreload.cmd')
+    New-Item -ItemType Directory -Path (Join-Path $stageDirectory 'cli') | Out-Null
+    Install-Binary -Destination (Join-Path $stageDirectory 'bin\airreload.exe')
 
     Write-Host 'Validating staged installation...'
     Test-Installation -Root $stageDirectory
@@ -200,6 +147,22 @@ try {
     Move-OwnedDirectory -Source $stageDirectory -Destination $installRoot
     $stageDirectory = $null
     $installCommitted = $true
+
+    if ($PreserveData -and $backupDirectory) {
+        foreach ($relative in @('cli\.airreload', 'sdks')) {
+            $source = Join-Path $backupDirectory $relative
+            if (Test-Path -LiteralPath $source) {
+                $item = Get-Item -LiteralPath $source -Force
+                if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw "Refusing to preserve non-directory data: $relative"
+                }
+                $destination = Join-Path $installRoot $relative
+                if (Test-Path -LiteralPath $destination) { throw "Staged release unexpectedly contains user data: $relative" }
+                [IO.Directory]::Move($source, $destination)
+                $preservedPaths += $relative
+            }
+        }
+    }
 
     if (-not $NoPath) {
         $binPath = Join-Path $installRoot 'bin'
@@ -225,11 +188,17 @@ try {
     $installCommitted = $false
     Write-Host ''
     Write-Host 'Airreload is installed.'
-    if ($NoPath) { Write-Host "Run: $installRoot\bin\airreload.cmd doctor" }
+    if ($NoPath) { Write-Host "Run: $installRoot\bin\airreload.exe doctor" }
     else { Write-Host 'Open a new PowerShell window, then run: airreload doctor' }
 }
 catch {
     if ($pathChanged) { Set-UserPath -Value $originalUserPath }
+    foreach ($relative in $preservedPaths) {
+        $source = Join-Path $installRoot $relative
+        $destination = Join-Path $backupDirectory $relative
+        # A failed move stops rollback before either copy can be deleted.
+        [IO.Directory]::Move($source, $destination)
+    }
     if ($installCommitted -and (Test-OwnedDirectory -Path $installRoot)) { Remove-OwnedDirectory -Path $installRoot }
     if ($backupDirectory -and (Test-Path -LiteralPath $backupDirectory) -and -not (Test-Path -LiteralPath $installRoot)) {
         Move-OwnedDirectory -Source $backupDirectory -Destination $installRoot

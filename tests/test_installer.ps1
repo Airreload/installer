@@ -1,187 +1,126 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
-$manifest = @{}
-Get-Content -LiteralPath (Join-Path $repoRoot 'versions.env') | ForEach-Object {
-    $name, $value = $_ -split '=', 2
-    $manifest[$name] = $value
-}
-
+$sourceRoot = Split-Path -Parent $PSScriptRoot
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) "ar-test-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
-$fakeBin = Join-Path $testRoot 'fake-bin'
-$installRoot = Join-Path $testRoot 'install'
+$repoRoot = Join-Path $testRoot 'installer'
+$installRoot = Join-Path $testRoot 'install with spaces'
 $pathFile = Join-Path $testRoot 'user-path'
-$gitConfigFile = Join-Path $testRoot 'git-config'
-New-Item -ItemType Directory -Path $fakeBin | Out-Null
-Set-Content -LiteralPath $pathFile -Value 'C:\keep-me' -NoNewline
+$fixture = Join-Path $testRoot 'fixture.exe'
+New-Item -ItemType Directory -Path $repoRoot | Out-Null
+Copy-Item (Join-Path $sourceRoot 'install.ps1'), (Join-Path $sourceRoot 'uninstall.ps1') $repoRoot
+$manifest = @(Get-Content (Join-Path $sourceRoot 'versions.env') | Where-Object { $_ -notmatch '^CLI_SHA256_' })
+$tag = ($manifest | Where-Object { $_ -match '^CLI_TAG=' }).Substring(8)
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
     if (-not $Condition) { throw "FAIL: $Message" }
 }
 
+# A real executable exercises invocation, hashing and rollback without SDKs.
+Add-Type -TypeDefinition @'
+using System;
+public class Fixture {
+    public static int Main(string[] args) {
+        if (args.Length != 1) return 2;
+        if (args[0] == "version") {
+            Console.WriteLine("Airreload " + (Environment.GetEnvironmentVariable("FAKE_CLI_VERSION") ?? Environment.GetEnvironmentVariable("AIRRELOAD_EXPECTED_CLI_VERSION")));
+            return 0;
+        }
+        if (args[0] != "--help") return 2;
+        if (Environment.GetEnvironmentVariable("FAKE_CLI_FAIL_HELP") == "1") return 1;
+        if (Environment.GetEnvironmentVariable("FAKE_CLI_FAIL_FINAL_HELP") == "1" && !Environment.GetCommandLineArgs()[0].Contains(".airreload-install.")) return 1;
+        Console.WriteLine("Airreload help");
+        return 0;
+    }
+}
+'@ -OutputAssembly $fixture -OutputType ConsoleApplication
+$hash = (Get-FileHash $fixture -Algorithm SHA256).Hash.ToLowerInvariant()
+Set-Content (Join-Path $repoRoot 'versions.env') -Value ($manifest + "CLI_SHA256_WINDOWS_X64=$hash") -Encoding Ascii
+
+function Invoke-WebRequest {
+    param($Uri, $OutFile, [switch]$UseBasicParsing, $TimeoutSec)
+    Assert-True ($Uri -ceq "https://github.com/Airreload/cli/releases/download/$tag/airreload-windows-x64.exe") 'only the pinned CLI binary may be downloaded'
+    if ($env:FAKE_DOWNLOAD_FAIL -eq '1') { throw 'Download failed' }
+    Copy-Item -LiteralPath $fixture -Destination $OutFile
+    if ($env:FAKE_CORRUPT_DOWNLOAD -eq '1') { Add-Content -LiteralPath $OutFile -Value 'corrupt' }
+}
+function git { throw 'Installer must not invoke Git' }
+function dart { throw 'Installer must not invoke Dart' }
+function flutter { throw 'Installer must not invoke Flutter' }
+
 function Invoke-Installer {
     param([string[]]$Arguments = @())
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'install.ps1') @Arguments | Out-Host
-    return $LASTEXITCODE
+    try {
+        $parameters = @{}
+        foreach ($argument in $Arguments) { $parameters[$argument.TrimStart('-')] = $true }
+        & (Join-Path $repoRoot 'install.ps1') @parameters | Out-Host
+        return 0
+    } catch {
+        $script:lastInstallError = $_.Exception.Message
+        Write-Host "Installer rejected operation: $_"
+        return 1
+    }
 }
-
 function Invoke-Uninstaller {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'uninstall.ps1') -Yes | Out-Host
-    return $LASTEXITCODE
+    try {
+        & (Join-Path $repoRoot 'uninstall.ps1') -Yes | Out-Host
+        return 0
+    } catch { return 1 }
 }
 
-$fakeGit = @'
-$ErrorActionPreference = 'Stop'
-if ($args[0] -eq '-c' -and $args[1] -eq 'core.longpaths=true') {
-    $args = @($args[2..($args.Count - 1)])
-}
-if ($args[0] -eq 'config' -and $args[1] -eq '--global' -and $args[2] -eq '--get' -and $args[3] -eq 'core.longpaths') {
-    if (Test-Path -LiteralPath $env:AIRRELOAD_TEST_GIT_CONFIG_FILE) {
-        Get-Content -LiteralPath $env:AIRRELOAD_TEST_GIT_CONFIG_FILE -Raw
-        exit 0
-    }
-    exit 1
-}
-if ($args[0] -eq 'config' -and $args[1] -eq '--global' -and $args[2] -eq 'core.longpaths' -and $args[3] -eq 'true') {
-    Set-Content -LiteralPath $env:AIRRELOAD_TEST_GIT_CONFIG_FILE -Value 'true' -NoNewline
-    exit 0
-}
-if ($args[0] -eq 'clone') {
-    $destination = $args[-1]
-    New-Item -ItemType Directory -Path (Join-Path $destination 'bin') -Force | Out-Null
-    $gitDirectory = New-Item -ItemType Directory -Path (Join-Path $destination '.git') -Force
-    $gitDirectory.Attributes = $gitDirectory.Attributes -bor [IO.FileAttributes]::Hidden
-    $readOnlyGitFile = Join-Path $gitDirectory.FullName 'config'
-    Set-Content -LiteralPath $readOnlyGitFile -Value 'fake git metadata' -NoNewline
-    $gitFile = Get-Item -Force -LiteralPath $readOnlyGitFile
-    $gitFile.Attributes = $gitFile.Attributes -bor [IO.FileAttributes]::ReadOnly
-    if ((Split-Path -Leaf $destination) -eq 'flutter') {
-        $flutter = @"
-@echo off
-if "%~1"=="--version" if "%~2"=="--machine" goto machine
-echo Flutter 3.47.5 ^(fake^)
-exit /b 0
-:machine
-echo {"frameworkVersion":"3.47.5"}
-exit /b 0
-"@
-        $dart = @"
-@echo off
-if "%~1"=="pub" if "%~2"=="get" goto pubget
-set "last="
-:next
-if "%~1"=="" goto run
-set "last=%~1"
-shift
-goto next
-:run
-if "%last%"=="version" goto version
-if "%last%"=="--help" goto help
-if "%last%"=="doctor" goto doctor
-exit /b 2
-:version
-echo Airreload 0.3.0-beta.1
-exit /b 0
-:help
-echo Build and hot reload a Flutter Android app.
-exit /b 0
-:doctor
-if "%AIRRELOAD_FAKE_FAIL_DOCTOR%"=="1" exit /b 1
-echo OK  fake doctor
-exit /b 0
-:pubget
-if not exist ".dart_tool" mkdir ".dart_tool"
-echo {}> ".dart_tool\package_config.json"
-exit /b 0
-"@
-        Set-Content -LiteralPath (Join-Path $destination 'bin\flutter.bat') -Value $flutter -Encoding Ascii
-        Set-Content -LiteralPath (Join-Path $destination 'bin\dart.bat') -Value $dart -Encoding Ascii
-    }
-    else {
-        Set-Content -LiteralPath (Join-Path $destination 'bin\airreload.dart') -Value 'void main() {}' -Encoding Ascii
-    }
-    exit 0
-}
-if ($args[0] -eq '-C' -and $args[2] -eq 'rev-parse' -and $args[3] -eq 'HEAD') {
-    if ((Split-Path -Leaf $args[1]) -eq 'cli') {
-        if ($env:AIRRELOAD_FAKE_CLI_COMMIT) { $env:AIRRELOAD_FAKE_CLI_COMMIT }
-        else { $env:AIRRELOAD_EXPECTED_CLI_COMMIT }
-    }
-    else { $env:AIRRELOAD_EXPECTED_FLUTTER_COMMIT }
-    exit 0
-}
-Write-Error "Unexpected fake git invocation: $args"
-exit 2
-'@
-Set-Content -LiteralPath (Join-Path $fakeBin 'fake-git.ps1') -Value $fakeGit -Encoding UTF8
-Set-Content -LiteralPath (Join-Path $fakeBin 'git.cmd') -Value '@powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0fake-git.ps1" %*' -Encoding Ascii
-
-$oldPath = $env:Path
-$env:Path = "$fakeBin;$env:Path"
+$originalEnvironment = @{}
+$names = @('Path', 'AIRRELOAD_INSTALL_ROOT', 'AIRRELOAD_TEST_USER_PATH_FILE', 'AIRRELOAD_EXPECTED_CLI_VERSION', 'FAKE_CLI_VERSION', 'FAKE_CLI_FAIL_HELP', 'FAKE_CLI_FAIL_FINAL_HELP', 'FAKE_CORRUPT_DOWNLOAD', 'FAKE_DOWNLOAD_FAIL')
+foreach ($name in $names) { $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $env:AIRRELOAD_INSTALL_ROOT = $installRoot
 $env:AIRRELOAD_TEST_USER_PATH_FILE = $pathFile
-$env:AIRRELOAD_TEST_GIT_CONFIG_FILE = $gitConfigFile
-$env:AIRRELOAD_EXPECTED_CLI_COMMIT = $manifest.CLI_COMMIT
-$env:AIRRELOAD_EXPECTED_FLUTTER_COMMIT = $manifest.FLUTTER_COMMIT
-
+$env:AIRRELOAD_EXPECTED_CLI_VERSION = $tag.Substring(1)
+Set-Content $pathFile -Value 'C:\keep-me' -NoNewline
 try {
-    $longParent = Join-Path $testRoot ('x' * 150)
-    $env:AIRRELOAD_INSTALL_ROOT = Join-Path $longParent 'install'
-    $ErrorActionPreference = 'Continue'
-    $longPathOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'install.ps1') 2>&1
-    $longPathExit = $LASTEXITCODE
-    $ErrorActionPreference = 'Stop'
-    Assert-True ($longPathExit -ne 0) 'overlong Flutter cache paths should fail before bootstrap'
-    Assert-True (($longPathOutput -join "`n") -match 'Installation path is too long') 'overlong paths should explain the failure'
-    Assert-True (($longPathOutput -join "`n") -match 'AIRRELOAD_INSTALL_ROOT') 'overlong paths should explain the remedy'
-    Assert-True (-not (Test-Path -LiteralPath $longParent)) 'overlong paths should be rejected before staging writes'
-    $env:AIRRELOAD_INSTALL_ROOT = $installRoot
-
     Assert-True ((Invoke-Installer) -eq 0) 'initial install should succeed'
-    Assert-True (Test-Path -LiteralPath (Join-Path $installRoot '.airreload-installer')) 'ownership marker should exist'
-    Assert-True (Test-Path -LiteralPath (Join-Path $installRoot 'bin\airreload.cmd')) 'launcher should exist'
-    Assert-True (Test-Path -LiteralPath (Join-Path $installRoot 'cli\.dart_tool\package_config.json')) 'packages should be resolved'
-    Assert-True ((Get-Content -LiteralPath $gitConfigFile -Raw) -eq 'true') 'Git long path support should be enabled'
-    $binPath = Join-Path $installRoot 'bin'
-    $pathEntries = (Get-Content -LiteralPath $pathFile -Raw) -split ';'
-    Assert-True ((@($pathEntries | Where-Object { $_ -ieq $binPath })).Count -eq 1) 'PATH entry should be added once'
-
+    Assert-True (Test-Path (Join-Path $installRoot 'bin\airreload.exe')) 'native executable should exist'
+    foreach ($path in @('flutter', 'sdks', 'cli\.dart_tool')) {
+        Assert-True (-not (Test-Path (Join-Path $installRoot $path))) "install must not create $path"
+    }
     Assert-True ((Invoke-Installer) -ne 0) 'install without -Replace should fail'
     Assert-True ((Invoke-Installer -Arguments @('-Replace')) -eq 0) 'replacement should succeed'
-    $pathEntries = (Get-Content -LiteralPath $pathFile -Raw) -split ';'
-    Assert-True ((@($pathEntries | Where-Object { $_ -ieq $binPath })).Count -eq 1) 'replacement should not duplicate PATH'
+    $binPath = Join-Path $installRoot 'bin'
+    $entries = (Get-Content $pathFile -Raw) -split ';'
+    Assert-True (@($entries | Where-Object { $_ -ieq $binPath }).Count -eq 1) 'PATH should contain one entry'
 
-    Set-Content -LiteralPath (Join-Path $installRoot 'preserved') -Value 'preserve-me'
-    $env:AIRRELOAD_FAKE_FAIL_DOCTOR = '1'
-    Assert-True ((Invoke-Installer -Arguments @('-Replace')) -ne 0) 'failed validation should fail replacement'
-    Remove-Item Env:\AIRRELOAD_FAKE_FAIL_DOCTOR
-    Assert-True (Test-Path -LiteralPath (Join-Path $installRoot 'preserved')) 'failed replacement should preserve installation'
+    # Simulate an old source installation and preserve its state during migration.
+    New-Item -ItemType Directory -Path (Join-Path $installRoot 'cli\.airreload'), (Join-Path $installRoot 'sdks\cached'), (Join-Path $installRoot 'flutter') | Out-Null
+    Set-Content (Join-Path $installRoot 'cli\.airreload\key') 'pairing-fixture'
+    Set-Content (Join-Path $installRoot 'sdks\cached\sentinel') 'sdk-fixture'
+    Assert-True ((Invoke-Installer -Arguments @('-Replace', '-NoPath', '-PreserveData')) -eq 0) 'migration should succeed'
+    Assert-True (-not (Test-Path (Join-Path $installRoot 'flutter'))) 'migration should remove the bootstrap SDK'
 
+    foreach ($failure in @('FAKE_CLI_FAIL_HELP', 'FAKE_CLI_FAIL_FINAL_HELP', 'FAKE_CORRUPT_DOWNLOAD', 'FAKE_DOWNLOAD_FAIL', 'FAKE_CLI_VERSION')) {
+        [Environment]::SetEnvironmentVariable($failure, '1', 'Process')
+        Assert-True ((Invoke-Installer -Arguments @('-Replace', '-PreserveData')) -ne 0) "$failure should reject replacement"
+        if ($failure -eq 'FAKE_CORRUPT_DOWNLOAD') {
+            Assert-True ($script:lastInstallError -match 'binary checksum mismatch') 'corrupt binary must be rejected before execution'
+        }
+        [Environment]::SetEnvironmentVariable($failure, $null, 'Process')
+        Assert-True ((Get-Content (Join-Path $installRoot 'cli\.airreload\key') -Raw).Trim() -eq 'pairing-fixture') 'pairing state must survive failure'
+        Assert-True ((Get-Content (Join-Path $installRoot 'sdks\cached\sentinel') -Raw).Trim() -eq 'sdk-fixture') 'SDK cache must survive failure'
+    }
     Assert-True ((Invoke-Uninstaller) -eq 0) 'uninstall should succeed'
-    Assert-True (-not (Test-Path -LiteralPath $installRoot)) 'uninstall should remove installation'
-    Assert-True ((Get-Content -LiteralPath $pathFile -Raw) -eq 'C:\keep-me') 'uninstall should preserve unrelated PATH entries'
+    Assert-True (-not (Test-Path $installRoot)) 'uninstall should remove installation'
+    Assert-True ((Get-Content $pathFile -Raw) -eq 'C:\keep-me') 'uninstall should preserve unrelated PATH'
 
     New-Item -ItemType Directory -Path $installRoot | Out-Null
-    Set-Content -LiteralPath (Join-Path $installRoot 'sentinel') -Value 'unrelated'
-    Assert-True ((Invoke-Installer -Arguments @('-Replace')) -ne 0) 'installer should reject an unowned directory'
-    Assert-True ((Invoke-Uninstaller) -ne 0) 'uninstaller should reject an unowned directory'
-    Remove-Item -LiteralPath $installRoot -Recurse -Force
-
-    $env:AIRRELOAD_FAKE_CLI_COMMIT = '0000000000000000000000000000000000000000'
-    Assert-True ((Invoke-Installer) -ne 0) 'commit mismatch should fail'
-    Assert-True (-not (Test-Path -LiteralPath $installRoot)) 'failed install should clean staging data'
-
+    Set-Content (Join-Path $installRoot 'sentinel') 'unrelated'
+    Assert-True ((Invoke-Installer -Arguments @('-Replace')) -ne 0) 'unowned directory must be preserved'
+    Assert-True ((Invoke-Uninstaller) -ne 0) 'uninstaller must reject unowned directory'
+    Assert-True (Test-Path (Join-Path $installRoot 'sentinel')) 'unrelated files must survive'
+    Remove-Item $installRoot -Recurse -Force
+    $env:FAKE_CORRUPT_DOWNLOAD = '1'
+    Assert-True ((Invoke-Installer) -ne 0) 'checksum mismatch should fail a fresh install'
+    Assert-True (-not (Test-Path $installRoot)) 'failure must not install an executable'
+    Assert-True (@(Get-ChildItem $testRoot -Force | Where-Object { $_.Name -match '^\.airreload-' }).Count -eq 0) 'staging and backups must be cleaned'
     Write-Host 'All Windows installer tests passed.'
-}
-finally {
-    $env:Path = $oldPath
-    Remove-Item Env:\AIRRELOAD_INSTALL_ROOT -ErrorAction SilentlyContinue
-    Remove-Item Env:\AIRRELOAD_TEST_USER_PATH_FILE -ErrorAction SilentlyContinue
-    Remove-Item Env:\AIRRELOAD_TEST_GIT_CONFIG_FILE -ErrorAction SilentlyContinue
-    Remove-Item Env:\AIRRELOAD_EXPECTED_CLI_COMMIT -ErrorAction SilentlyContinue
-    Remove-Item Env:\AIRRELOAD_EXPECTED_FLUTTER_COMMIT -ErrorAction SilentlyContinue
-    Remove-Item Env:\AIRRELOAD_FAKE_CLI_COMMIT -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
+} finally {
+    foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], 'Process') }
+    Remove-Item $testRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
