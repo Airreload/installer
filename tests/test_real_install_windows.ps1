@@ -1,6 +1,9 @@
 # Destructive to this user's PATH while running: use only on disposable CI runners.
 [CmdletBinding()]
-param([ValidateSet('Install', 'Installed', 'Removed')][string]$Phase = 'Install')
+param(
+    [ValidateSet('Install', 'Installed', 'Removed')][string]$Phase = 'Install',
+    [switch]$Web
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -29,7 +32,7 @@ $temporaryBase = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::Ge
 $testRoot = Join-Path $temporaryBase "ar smoke $([guid]::NewGuid().ToString('N').Substring(0, 8))"
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 $originalUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-$environmentNames = @('Path', 'AIRRELOAD_INSTALL_ROOT', 'AIRRELOAD_TEST_USER_PATH_FILE', 'PUB_CACHE', 'GIT_CONFIG_GLOBAL')
+$environmentNames = @('Path', 'AIRRELOAD_INSTALL_ROOT', 'AIRRELOAD_TEST_USER_PATH_FILE', 'PUB_CACHE', 'GIT_CONFIG_GLOBAL', 'AIRRELOAD_TEST_WEB_SCRIPT', 'TEMP', 'TMP')
 $originalEnvironment = @{}
 foreach ($name in $environmentNames) { $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 
@@ -57,7 +60,19 @@ try {
     Write-Host "Testing $env:ImageOS / $env:ImageVersion with Windows PowerShell $($PSVersionTable.PSVersion)"
     Write-Host "Allowed PATH: $env:Path"
     Write-Host 'Installing the pinned native CLI without Git, Dart, or Flutter...'
-    & $powerShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'install.ps1')
+    if ($Web) {
+        $env:AIRRELOAD_TEST_WEB_SCRIPT = Join-Path $repoRoot 'install.ps1'
+        $env:TEMP = $testRoot
+        $env:TMP = $testRoot
+        # Feed this revision's script through IEX, exactly as the web command
+        # does. The bootstrap then fetches the real public snapshot and binary.
+        $output = & $powerShell -NoProfile -Command 'Get-Content -LiteralPath $env:AIRRELOAD_TEST_WEB_SCRIPT -Raw | Invoke-Expression'
+        $output | Out-Host
+        if (-not ($output -match 'Downloading the Airreload installer')) { throw 'Web invocation did not bootstrap.' }
+        if (Get-ChildItem $testRoot -Directory -Filter 'airreload-bootstrap-*') { throw 'Bootstrap temporary files remain.' }
+    } else {
+        & $powerShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'install.ps1')
+    }
     if ($LASTEXITCODE -ne 0) { throw 'Real installation failed.' }
     foreach ($path in @('flutter', 'sdks', 'cli\.dart_tool')) {
         if (Test-Path (Join-Path $env:AIRRELOAD_INSTALL_ROOT $path)) { throw "Installation unexpectedly created $path" }

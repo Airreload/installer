@@ -43,6 +43,9 @@ jobs:
       - name: Run isolated Windows tests
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\test_installer.ps1
+      - name: Run isolated Windows web bootstrap tests
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\test_bootstrap_windows.ps1
 
   real-install:
     if: ${{ !inputs.isolated_only }}
@@ -96,3 +99,6 @@ jobs:
       - name: Verify first install, saved PATH, and uninstall with restricted tools
         shell: powershell
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\test_real_install_windows.ps1
+      - name: Verify web install, saved PATH, and uninstall with restricted tools
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\test_real_install_windows.ps1 -Web

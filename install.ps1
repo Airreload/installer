@@ -9,7 +9,48 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $markerContent = 'airreload-installer-v1'
-$manifestPath = Join-Path $PSScriptRoot 'versions.env'
+$manifestPath = $null
+# Invoke-Expression has no installer file. Never use the current directory's
+# manifest when the script was downloaded into memory.
+if ($MyInvocation.MyCommand -is [Management.Automation.ExternalScriptInfo]) {
+    $manifestPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'versions.env'
+}
+
+function Invoke-AirreloadBootstrap {
+    param([hashtable]$Options)
+
+    $temporary = Join-Path ([IO.Path]::GetTempPath()) "airreload-bootstrap-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Path $temporary | Out-Null
+    try {
+        Write-Host 'Downloading the Airreload installer...'
+        $archivePath = Join-Path $temporary 'installer.zip'
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri 'https://github.com/Airreload/installer/archive/refs/heads/main.zip' -OutFile $archivePath -UseBasicParsing -TimeoutSec 300
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [IO.Compression.ZipFile]::OpenRead($archivePath)
+        try {
+            foreach ($name in @('install.ps1', 'versions.env')) {
+                $entry = $archive.GetEntry("installer-main/$name")
+                if ($null -eq $entry) { throw "Installer archive is missing $name." }
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $temporary $name))
+            }
+        } finally {
+            $archive.Dispose()
+        }
+        # Use a child process so execution policy is scoped to this invocation.
+        # User/machine policy settings are not changed.
+        $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $childArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $temporary 'install.ps1'))
+        foreach ($name in @('Replace', 'NoPath', 'PreserveData')) {
+            if ($Options[$name]) { $childArguments += "-$name" }
+        }
+        & $powerShell @childArguments
+        if ($LASTEXITCODE -ne 0) { throw "Airreload installation failed (exit $LASTEXITCODE)." }
+    } finally {
+        Remove-Item -LiteralPath $temporary -Recurse -Force
+    }
+}
+
 $stageDirectory = $null
 $backupDirectory = $null
 $installCommitted = $false
@@ -101,7 +142,10 @@ if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem -or
     $env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') {
     throw 'Airreload currently supports Windows x64 only.'
 }
-if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Version manifest not found: $manifestPath" }
+if (-not $manifestPath -or -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+    Invoke-AirreloadBootstrap -Options @{ Replace = $Replace; NoPath = $NoPath; PreserveData = $PreserveData }
+    return
+}
 
 $cliRepository = Get-ManifestValue -Name 'CLI_REPOSITORY'
 $cliTag = Get-ManifestValue -Name 'CLI_TAG'
