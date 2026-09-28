@@ -233,6 +233,14 @@ assert_bootstrap_clean() {
   done
 }
 
+# The documented command passes zero arguments. This also covers Bash 3.2's
+# nounset behavior for empty arrays, which differs from newer Bash versions.
+run_stream_install >"$test_root/no-args-output"
+assert_file "$install_root/bin/airreload"
+assert_contains "$profile" '# >>> airreload installer >>>'
+assert_bootstrap_clean
+run_uninstall >/dev/null
+
 # Streamed installs must ignore any manifest in the current directory.
 mkdir -p "$test_root/untrusted"
 printf 'CLI_TAG=do-not-use\n' >"$test_root/untrusted/versions.env"
