@@ -8,8 +8,12 @@ readonly PATH_BEGIN='# >>> airreload installer >>>'
 readonly PATH_END='# <<< airreload installer <<<'
 readonly SHELL_PATH_REFERENCE="\$PATH"
 
-script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
-manifest="$script_dir/versions.env"
+# A piped script has no BASH_SOURCE; never trust a manifest in the caller's CWD.
+manifest=''
+if [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]} ]]; then
+  script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+  manifest="$script_dir/versions.env"
+fi
 replace=0
 setup_path=1
 preserve_data=0
@@ -117,9 +121,25 @@ cleanup() {
 
 download() {
   curl --fail --location --silent --show-error --retry 3 \
-    --connect-timeout 15 --max-time 300 --proto '=https' --proto-redir '=https' \
+    --connect-timeout 15 --max-time 300 --proto '=https' --proto-redir '=https' --tlsv1.2 \
     --output "$2" "$1"
 }
+
+bootstrap() (
+  # Fetch both files in one repository snapshot so a release published during
+  # installation cannot mix an older installer with a newer manifest.
+  command -v tar >/dev/null 2>&1 || die 'Required command not found: tar'
+  bootstrap_dir=$(mktemp -d "${TMPDIR:-/tmp}/airreload-bootstrap.XXXXXX")
+  trap 'rm -rf -- "$bootstrap_dir"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  printf 'Fetching Airreload installer and release information…\n'
+  download 'https://github.com/Airreload/installer/archive/refs/heads/main.tar.gz' "$bootstrap_dir/installer.tar.gz"
+  tar -xzf "$bootstrap_dir/installer.tar.gz" -C "$bootstrap_dir" \
+    installer-main/install.sh installer-main/versions.env
+  [[ -f "$bootstrap_dir/installer-main/install.sh" && -f "$bootstrap_dir/installer-main/versions.env" ]] || die 'Incomplete installer download.'
+  bash "$bootstrap_dir/installer-main/install.sh" "$@" < /dev/null
+)
 
 install_binary() {
   local destination=$1 actual_hash
@@ -129,6 +149,7 @@ install_binary() {
   actual_hash=$(shasum -a 256 "$destination")
   actual_hash=${actual_hash%% *}
   [[ "$actual_hash" == "$cli_sha256" ]] || die 'Airreload binary checksum mismatch.'
+  printf '✓ Verified download\n'
   chmod 0755 "$destination"
 }
 
@@ -186,105 +207,116 @@ update_profile() {
   mv -f -- "$temp" "$profile"
 }
 
-while (($# > 0)); do
-  case $1 in
-    --replace) replace=1 ;;
-    --no-path) setup_path=0 ;;
-    --preserve-data) preserve_data=1 ;;
-    --help|-h) usage; exit 0 ;;
-    *) usage >&2; die "Unknown option: $1" ;;
-  esac
-  shift
-done
-
-[[ $(uname -s) == Darwin ]] || die 'Airreload currently supports macOS only.'
-[[ $(uname -m) == arm64 ]] || die 'Airreload currently supports Apple Silicon (arm64) only.'
-for prerequisite in curl shasum; do
-  command -v "$prerequisite" >/dev/null 2>&1 || die "Required command not found: $prerequisite"
-done
-[[ -f "$manifest" ]] || die "Version manifest not found: $manifest"
-
-cli_repository=$(manifest_value CLI_REPOSITORY) || die 'Invalid CLI_REPOSITORY in versions.env.'
-cli_tag=$(manifest_value CLI_TAG) || die 'Invalid CLI_TAG in versions.env.'
-cli_commit=$(manifest_value CLI_COMMIT) || die 'Invalid CLI_COMMIT in versions.env.'
-cli_sha256=$(manifest_value CLI_SHA256_MACOS_ARM64) || die 'Invalid CLI_SHA256_MACOS_ARM64 in versions.env.'
-[[ "$cli_repository" == 'https://github.com/Airreload/cli.git' ]] || die 'Unexpected CLI repository in versions.env.'
-[[ "$cli_tag" =~ ^v[0-9A-Za-z.+-]+$ ]] || die 'Invalid CLI release tag in versions.env.'
-[[ "$cli_commit" =~ ^[0-9a-f]{40}$ ]] || die 'Invalid CLI commit in versions.env.'
-[[ "$cli_sha256" =~ ^[0-9a-f]{64}$ ]] || die 'Invalid binary SHA-256 checksum in versions.env.'
-
-install_root=${AIRRELOAD_INSTALL_ROOT:-"$HOME/.airreload"}
-validate_root "$install_root"
-install_parent=$(dirname -- "$install_root")
-mkdir -p -- "$install_parent"
-
-lock_candidate="$install_parent/.$(basename -- "$install_root").install-lock"
-mkdir -- "$lock_candidate" 2>/dev/null || die "Another installation is in progress (lock: $lock_candidate)."
-lock_dir=$lock_candidate
-trap cleanup EXIT
-
-if [[ -e "$install_root" ]]; then
-  ((replace == 1)) || die "$install_root already exists. Re-run with --replace to replace an installer-owned installation."
-  is_owned_dir "$install_root" || die "$install_root is not owned by the Airreload installer; it was not changed."
-fi
-
-stage_dir=$(mktemp -d "$install_parent/.airreload-install.XXXXXX")
-printf '%s\n' "$MARKER_CONTENT" >"$stage_dir/.airreload-installer"
-trap cleanup EXIT
-rollback_dir=$(mktemp -d "$install_parent/.airreload-rollback.XXXXXX")
-
-printf 'Installing Airreload into %s\n' "$install_root"
-printf 'Downloading Airreload %s...\n' "$cli_tag"
-# Keep the state parent for upgrades from source-based installations.
-mkdir -p -- "$stage_dir/bin" "$stage_dir/cli"
-install_binary "$stage_dir/bin/airreload"
-
-printf 'Validating staged installation...\n'
-validate_installation "$stage_dir"
-
-if [[ -e "$install_root" ]]; then
-  backup_dir=$(mktemp -d "$install_parent/.airreload-backup.XXXXXX")
-  rmdir -- "$backup_dir"
-  mv -- "$install_root" "$backup_dir"
-fi
-mv -- "$stage_dir" "$install_root"
-stage_dir=''
-committed=1
-
-if ((preserve_data == 1)) && [[ -n "$backup_dir" ]]; then
-  for relative in cli/.airreload sdks; do
-    if [[ -e "$backup_dir/$relative" || -L "$backup_dir/$relative" ]]; then
-      [[ -d "$backup_dir/$relative" && ! -L "$backup_dir/$relative" ]] || die "Refusing to preserve non-directory data: $relative"
-      [[ ! -e "$install_root/$relative" ]] || die "Staged release unexpectedly contains user data: $relative"
-      preserved_paths+=("$relative")
-      mv -- "$backup_dir/$relative" "$install_root/$relative"
-    fi
+# Parse the full script before starting an installation streamed over stdin.
+main() {
+  local requested_arguments=("$@")
+  while (($# > 0)); do
+    case $1 in
+      --replace) replace=1 ;;
+      --no-path) setup_path=0 ;;
+      --preserve-data) preserve_data=1 ;;
+      --help|-h) usage; exit 0 ;;
+      *) usage >&2; die "Unknown option: $1" ;;
+    esac
+    shift
   done
-fi
 
-if ((setup_path == 1)); then
-  while IFS= read -r profile; do
-    update_profile "$profile"
-  done < <(profile_files)
-fi
+  [[ $(uname -s) == Darwin ]] || die 'Airreload currently supports macOS only.'
+  [[ $(uname -m) == arm64 ]] || die 'Airreload currently supports Apple Silicon (arm64) only.'
+  for prerequisite in curl shasum; do
+    command -v "$prerequisite" >/dev/null 2>&1 || die "Required command not found: $prerequisite"
+  done
+  if [[ ! -f "$manifest" ]]; then
+    bootstrap "${requested_arguments[@]}"
+    return
+  fi
+  printf '✓ Detected macOS arm64\n'
 
-printf 'Validating installed command...\n'
-validate_installation "$install_root"
+  cli_repository=$(manifest_value CLI_REPOSITORY) || die 'Invalid CLI_REPOSITORY in versions.env.'
+  cli_tag=$(manifest_value CLI_TAG) || die 'Invalid CLI_TAG in versions.env.'
+  cli_commit=$(manifest_value CLI_COMMIT) || die 'Invalid CLI_COMMIT in versions.env.'
+  cli_sha256=$(manifest_value CLI_SHA256_MACOS_ARM64) || die 'Invalid CLI_SHA256_MACOS_ARM64 in versions.env.'
+  [[ "$cli_repository" == 'https://github.com/Airreload/cli.git' ]] || die 'Unexpected CLI repository in versions.env.'
+  [[ "$cli_tag" =~ ^v[0-9A-Za-z.+-]+$ ]] || die 'Invalid CLI release tag in versions.env.'
+  [[ "$cli_commit" =~ ^[0-9a-f]{40}$ ]] || die 'Invalid CLI commit in versions.env.'
+  [[ "$cli_sha256" =~ ^[0-9a-f]{64}$ ]] || die 'Invalid binary SHA-256 checksum in versions.env.'
 
-if [[ -n "$backup_dir" ]]; then
-  remove_owned_dir "$backup_dir"
-  backup_dir=''
-fi
-committed=0
-rm -rf -- "$rollback_dir"
-rollback_dir=''
-rmdir -- "$lock_dir"
-lock_dir=''
-trap - EXIT
+  install_root=${AIRRELOAD_INSTALL_ROOT:-"$HOME/.airreload"}
+  validate_root "$install_root"
+  install_parent=$(dirname -- "$install_root")
+  mkdir -p -- "$install_parent"
 
-printf '\nAirreload is installed.\n'
-if ((setup_path == 1)); then
-  printf 'Open a new terminal, then run: airreload doctor\n'
-else
-  printf 'Run: %s/bin/airreload doctor\n' "$install_root"
-fi
+  lock_candidate="$install_parent/.$(basename -- "$install_root").install-lock"
+  mkdir -- "$lock_candidate" 2>/dev/null || die "Another installation is in progress (lock: $lock_candidate)."
+  lock_dir=$lock_candidate
+  trap cleanup EXIT
+
+  if [[ -e "$install_root" ]]; then
+    ((replace == 1)) || die "$install_root already exists. Re-run with --replace to replace an installer-owned installation."
+    is_owned_dir "$install_root" || die "$install_root is not owned by the Airreload installer; it was not changed."
+  fi
+
+  stage_dir=$(mktemp -d "$install_parent/.airreload-install.XXXXXX")
+  printf '%s\n' "$MARKER_CONTENT" >"$stage_dir/.airreload-installer"
+  trap cleanup EXIT
+  rollback_dir=$(mktemp -d "$install_parent/.airreload-rollback.XXXXXX")
+
+  printf 'Installing Airreload into %s\n' "$install_root"
+  printf 'Downloading Airreload CLI %s...\n' "$cli_tag"
+  # Keep the state parent for upgrades from source-based installations.
+  mkdir -p -- "$stage_dir/bin" "$stage_dir/cli"
+  install_binary "$stage_dir/bin/airreload"
+
+  printf 'Validating staged installation...\n'
+  validate_installation "$stage_dir"
+
+  if [[ -e "$install_root" ]]; then
+    backup_dir=$(mktemp -d "$install_parent/.airreload-backup.XXXXXX")
+    rmdir -- "$backup_dir"
+    mv -- "$install_root" "$backup_dir"
+  fi
+  mv -- "$stage_dir" "$install_root"
+  stage_dir=''
+  committed=1
+
+  if ((preserve_data == 1)) && [[ -n "$backup_dir" ]]; then
+    for relative in cli/.airreload sdks; do
+      if [[ -e "$backup_dir/$relative" || -L "$backup_dir/$relative" ]]; then
+        [[ -d "$backup_dir/$relative" && ! -L "$backup_dir/$relative" ]] || die "Refusing to preserve non-directory data: $relative"
+        [[ ! -e "$install_root/$relative" ]] || die "Staged release unexpectedly contains user data: $relative"
+        preserved_paths+=("$relative")
+        mv -- "$backup_dir/$relative" "$install_root/$relative"
+      fi
+    done
+  fi
+
+  if ((setup_path == 1)); then
+    while IFS= read -r profile; do
+      update_profile "$profile"
+    done < <(profile_files)
+  fi
+
+  printf 'Validating installed command...\n'
+  validate_installation "$install_root"
+
+  if [[ -n "$backup_dir" ]]; then
+    remove_owned_dir "$backup_dir"
+    backup_dir=''
+  fi
+  committed=0
+  rm -rf -- "$rollback_dir"
+  rollback_dir=''
+  rmdir -- "$lock_dir"
+  lock_dir=''
+  trap - EXIT
+
+  printf '\n✓ Airreload is installed in %s/bin\n' "$install_root"
+  if ((setup_path == 1)); then
+    printf '✓ Added Airreload to PATH\n'
+    printf 'Open a new terminal, enter your Flutter project, and run: airreload run\n'
+  else
+    printf 'From your Flutter project, run: %s/bin/airreload run\n' "$install_root"
+  fi
+}
+
+main "$@"

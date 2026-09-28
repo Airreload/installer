@@ -54,6 +54,17 @@ jobs:
         env:
           AIRRELOAD_INSTALL_ROOT: ${{ runner.temp }}/airreload-smoke
         run: ./install.sh --no-path
+      - name: Verify piped installation in a separate directory
+        env:
+          AIRRELOAD_INSTALL_ROOT: ${{ runner.temp }}/airreload-piped-smoke
+          AIRRELOAD_TEST_PROFILE_FILE: ${{ runner.temp }}/airreload-piped-profile
+        run: |
+          cat install.sh | bash -s -- --no-path
+          "$AIRRELOAD_INSTALL_ROOT/bin/airreload" version
+          test ! -e "$AIRRELOAD_INSTALL_ROOT/flutter"
+          test ! -e "$AIRRELOAD_INSTALL_ROOT/sdks"
+          ./uninstall.sh --yes
+          test ! -e "$AIRRELOAD_INSTALL_ROOT"
       - name: Verify commands
         env:
           AIRRELOAD_INSTALL_ROOT: ${{ runner.temp }}/airreload-smoke

@@ -7,7 +7,7 @@ Flutter or Dart, resolve packages, or download any project SDKs.
 
 ## Requirements
 
-- macOS Apple Silicon: `curl` and `shasum` (included with macOS)
+- macOS Apple Silicon: `curl`, `tar`, and `shasum` (included with macOS)
 - Windows x64: PowerShell 5.1 or later
 - Internet access during installation
 
@@ -16,7 +16,25 @@ Building an Android app also requires Android build tools and a suitable JDK.
 
 ## Install
 
-Download and extract this repository, or clone it if Git is already installed:
+On macOS Apple Silicon, paste this command into your terminal:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/Airreload/installer/main/install.sh | bash
+```
+
+The script automatically fetches the installer and `versions.env` together from
+one repository snapshot, installs the verified CLI, and removes its temporary
+files. You do not need Git or a local copy of the manifest. Open a new terminal,
+enter your Flutter project, and run `airreload run`.
+
+To pass installer options, use `bash -s --`, for example:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/Airreload/installer/main/install.sh | bash -s -- --replace --preserve-data
+```
+
+You can also download and extract this repository, or clone it to inspect the
+installer before running it:
 
 ```sh
 git clone https://github.com/Airreload/installer.git
