@@ -209,16 +209,15 @@ update_profile() {
 
 # Parse the full script before starting an installation streamed over stdin.
 main() {
-  local requested_arguments=("$@")
-  while (($# > 0)); do
-    case $1 in
+  # Keep the original arguments for bootstrap, including an empty argument list.
+  for argument in "$@"; do
+    case $argument in
       --replace) replace=1 ;;
       --no-path) setup_path=0 ;;
       --preserve-data) preserve_data=1 ;;
       --help|-h) usage; exit 0 ;;
-      *) usage >&2; die "Unknown option: $1" ;;
+      *) usage >&2; die "Unknown option: $argument" ;;
     esac
-    shift
   done
 
   [[ $(uname -s) == Darwin ]] || die 'Airreload currently supports macOS only.'
@@ -227,7 +226,7 @@ main() {
     command -v "$prerequisite" >/dev/null 2>&1 || die "Required command not found: $prerequisite"
   done
   if [[ ! -f "$manifest" ]]; then
-    bootstrap "${requested_arguments[@]}"
+    bootstrap "$@"
     return
   fi
   printf '✓ Detected macOS arm64\n'

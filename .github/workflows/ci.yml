@@ -59,7 +59,7 @@ jobs:
           AIRRELOAD_INSTALL_ROOT: ${{ runner.temp }}/airreload-piped-smoke
           AIRRELOAD_TEST_PROFILE_FILE: ${{ runner.temp }}/airreload-piped-profile
         run: |
-          cat install.sh | bash -s -- --no-path
+          cat install.sh | bash
           "$AIRRELOAD_INSTALL_ROOT/bin/airreload" version
           test ! -e "$AIRRELOAD_INSTALL_ROOT/flutter"
           test ! -e "$AIRRELOAD_INSTALL_ROOT/sdks"
