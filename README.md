@@ -43,12 +43,33 @@ less install.sh versions.env
 ./install.sh
 ```
 
-On Windows, run the native PowerShell installer:
+On Windows x64, paste this command into PowerShell:
+
+```powershell
+iwr -UseBasicParsing 'https://raw.githubusercontent.com/Airreload/installer/main/install.ps1' | iex
+```
+
+It downloads the PowerShell installer and manifest together from one repository
+snapshot, verifies the native executable, and cleans up temporary files. It needs
+no Git checkout or permanent execution-policy change. Open a new PowerShell
+window afterward and run `airreload run` from your Flutter project.
+
+To pass options, invoke the downloaded script as a script block:
+
+```powershell
+& ([scriptblock]::Create((iwr -UseBasicParsing 'https://raw.githubusercontent.com/Airreload/installer/main/install.ps1').Content)) -Replace -PreserveData
+```
+
+If you already downloaded this repository, you can inspect and run it locally:
 
 ```powershell
 Get-Content .\install.ps1, .\versions.env
 .\install.ps1
 ```
+
+`versions.env` is a public release manifest containing version pins, repository
+URLs, and SHA-256 checksums. It contains no secrets. Its name is retained for older
+CLI update clients; users do not need to download or configure it themselves.
 
 The installation is stored in `~/.airreload` on macOS and
 `%USERPROFILE%\.airreload` on Windows:
@@ -157,6 +178,7 @@ bash tests/test_installer.sh
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\test_installer.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\test_bootstrap_windows.ps1
 ```
 
 Isolated tests verify real checksums, version checks, source-install migration,
