@@ -19,9 +19,7 @@ $env:TEMP = $testRoot
 $env:TMP = $testRoot
 $env:AIRRELOAD_TEST_BOOTSTRAP_RESULT = Join-Path $testRoot 'result.json'
 $env:AIRRELOAD_TEST_BOOTSTRAP_FAIL = $null
-$script:downloadFailure = $false
-$script:corruptArchive = $false
-$script:downloadCount = 0
+$bootstrapFixture = @{ downloadFailure = $false; corruptArchive = $false; downloadCount = 0 }
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -30,9 +28,9 @@ function Assert-True {
 function Invoke-WebRequest {
     param($Uri, $OutFile, [switch]$UseBasicParsing, $TimeoutSec)
     Assert-True ($Uri -ceq 'https://github.com/Airreload/installer/archive/refs/heads/main.zip') 'bootstrap must download one official snapshot'
-    $script:downloadCount++
-    if ($script:downloadFailure) { throw 'Fixture download failure' }
-    if ($script:corruptArchive) { Set-Content $OutFile 'not a zip'; return }
+    $bootstrapFixture.downloadCount++
+    if ($bootstrapFixture.downloadFailure) { throw 'Fixture download failure' }
+    if ($bootstrapFixture.corruptArchive) { Set-Content $OutFile 'not a zip'; return }
     Copy-Item -LiteralPath $archiveFile -Destination $OutFile
 }
 function Assert-Clean {
@@ -71,14 +69,14 @@ Set-Content (Join-Path $testRoot 'versions.env') 'poisoned manifest'
 Push-Location $testRoot
 try {
     Invoke-Expression $source
-    Assert-True ($script:downloadCount -eq 1) 'piped invocation must bootstrap'
+    Assert-True ($bootstrapFixture.downloadCount -eq 1) 'piped invocation must bootstrap'
     $result = Get-Content $env:AIRRELOAD_TEST_BOOTSTRAP_RESULT -Raw | ConvertFrom-Json
     Assert-True (-not $result.replace -and -not $result.noPath -and -not $result.preserveData) 'zero-argument invocation must work'
     Assert-Clean
 
     Set-Content (Join-Path $testRoot 'caller.ps1') 'Invoke-Expression $source'
     & (Join-Path $testRoot 'caller.ps1')
-    Assert-True ($script:downloadCount -eq 2) 'IEX from a script must ignore its adjacent manifest'
+    Assert-True ($bootstrapFixture.downloadCount -eq 2) 'IEX from a script must ignore its adjacent manifest'
     Assert-Clean
 
     & ([scriptblock]::Create($source)) -Replace -NoPath -PreserveData
@@ -95,12 +93,12 @@ try {
     Assert-Clean
     Remove-Item $env:AIRRELOAD_TEST_BOOTSTRAP_RESULT
 
-    $script:downloadFailure = $true
+    $bootstrapFixture.downloadFailure = $true
     Assert-Rejected
-    $script:downloadFailure = $false
-    $script:corruptArchive = $true
+    $bootstrapFixture.downloadFailure = $false
+    $bootstrapFixture.corruptArchive = $true
     Assert-Rejected
-    $script:corruptArchive = $false
+    $bootstrapFixture.corruptArchive = $false
     $env:AIRRELOAD_TEST_BOOTSTRAP_FAIL = '1'
     Assert-Rejected
     $env:AIRRELOAD_TEST_BOOTSTRAP_FAIL = $null
