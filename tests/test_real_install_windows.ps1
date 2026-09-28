@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 if ($Phase -eq 'Installed') {
-    $expected = Join-Path $env:AIRRELOAD_INSTALL_ROOT 'bin\airreload.cmd'
+    $expected = Join-Path $env:AIRRELOAD_INSTALL_ROOT 'bin\airreload.exe'
     $command = Get-Command airreload -CommandType Application -ErrorAction Stop
     if ($command.Source -ine $expected) { throw "Resolved unexpected launcher: $($command.Source)" }
     foreach ($argument in @('version', '--help', 'doctor')) {
@@ -51,28 +51,17 @@ try {
     [Environment]::SetEnvironmentVariable('Path', $sentinelPath, 'User')
     $env:Path = $systemPath
     if (Get-Command git -ErrorAction SilentlyContinue) { throw 'Missing-Git isolation failed.' }
-    Write-Host 'Checking missing-Git diagnostic before any installation writes...'
-    # Expected native stderr must be captured without PowerShell 5.1 stopping early.
-    $ErrorActionPreference = 'Continue'
-    $diagnostic = & $powerShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'install.ps1') 2>&1
-    $missingGitExit = $LASTEXITCODE
-    $ErrorActionPreference = 'Stop'
-    if ($missingGitExit -eq 0 -or ($diagnostic -join "`n") -notmatch 'Required command not found: git') {
-        throw "Missing-Git check failed (exit $missingGitExit): $diagnostic"
-    }
-    if (Test-Path -LiteralPath $env:AIRRELOAD_INSTALL_ROOT) { throw 'Missing Git left an installation behind.' }
-    if (@(Get-ChildItem -LiteralPath $testRoot -Force).Count -ne 0) { throw 'Missing Git left staging/config data behind.' }
-    if ([Environment]::GetEnvironmentVariable('Path', 'User') -cne $sentinelPath) { throw 'Missing Git changed user PATH.' }
-
-    $env:Path = "$systemPath;$gitDirectory"
-    foreach ($tool in @('dart', 'flutter', 'pwsh', 'openssl')) {
+    foreach ($tool in @('git', 'dart', 'flutter', 'pwsh', 'openssl')) {
         if (Get-Command $tool -ErrorAction SilentlyContinue) { throw "Unexpected preinstalled tool on restricted PATH: $tool" }
     }
     Write-Host "Testing $env:ImageOS / $env:ImageVersion with Windows PowerShell $($PSVersionTable.PSVersion)"
     Write-Host "Allowed PATH: $env:Path"
-    Write-Host 'Installing pinned public releases with a fresh pub cache and real user PATH registration...'
+    Write-Host 'Installing the pinned native CLI without Git, Dart, or Flutter...'
     & $powerShell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'install.ps1')
     if ($LASTEXITCODE -ne 0) { throw 'Real installation failed.' }
+    foreach ($path in @('flutter', 'sdks', 'cli\.dart_tool')) {
+        if (Test-Path (Join-Path $env:AIRRELOAD_INSTALL_ROOT $path)) { throw "Installation unexpectedly created $path" }
+    }
     $binPath = Join-Path $env:AIRRELOAD_INSTALL_ROOT 'bin'
     $savedEntries = @([Environment]::GetEnvironmentVariable('Path', 'User') -split ';')
     if (@($savedEntries | Where-Object { $_ -ieq $binPath }).Count -ne 1 -or $savedEntries -notcontains $sentinelPath) {

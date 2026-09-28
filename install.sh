@@ -39,11 +39,11 @@ die() {
 }
 
 manifest_value() {
-  local key=$1
+  local key=$1 file=${2:-$manifest}
   awk -F= -v key="$key" '
     $1 == key { count++; value = substr($0, length(key) + 2) }
     END { if (count != 1) exit 1; print value }
-  ' "$manifest"
+  ' "$file"
 }
 
 validate_root() {
@@ -115,43 +115,29 @@ cleanup() {
   exit "$status"
 }
 
-clone_at_release() {
-  local repository=$1
-  local tag=$2
-  local expected_commit=$3
-  local destination=$4
-  local depth=$5
-  local actual_commit
-
-  git clone --quiet --filter=blob:none --depth "$depth" --single-branch --branch "$tag" -- "$repository" "$destination"
-  actual_commit=$(git -C "$destination" rev-parse HEAD)
-  [[ "$actual_commit" == "$expected_commit" ]] || die "$repository tag $tag resolved to $actual_commit, expected $expected_commit."
+download() {
+  curl --fail --location --silent --show-error --retry 3 \
+    --connect-timeout 15 --max-time 300 --proto '=https' --proto-redir '=https' \
+    --output "$2" "$1"
 }
 
-write_launcher() {
-  local launcher=$1
-  cat >"$launcher" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
-exec "$root/flutter/bin/dart" \
-  "--packages=$root/cli/.dart_tool/package_config.json" \
-  "$root/cli/bin/airreload.dart" "$@"
-EOF
-  chmod 0755 "$launcher"
+install_binary() {
+  local destination=$1 actual_hash
+  local asset='airreload-macos-arm64'
+  local release_url="https://github.com/Airreload/cli/releases/download/$cli_tag"
+  download "$release_url/$asset" "$destination"
+  actual_hash=$(shasum -a 256 "$destination")
+  actual_hash=${actual_hash%% *}
+  [[ "$actual_hash" == "$cli_sha256" ]] || die 'Airreload binary checksum mismatch.'
+  chmod 0755 "$destination"
 }
 
 validate_installation() {
-  local root=$1
-  local flutter_version
-  flutter_version=$("$root/flutter/bin/flutter" --version --machine) || die 'Flutter version validation failed.'
-  grep -Eq '"frameworkVersion"[[:space:]]*:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+[^"[:space:]]*"' <<<"$flutter_version" || die 'Flutter returned an invalid framework version.'
-  if grep -Eq '"frameworkVersion"[[:space:]]*:[[:space:]]*"0\.0\.0-unknown"' <<<"$flutter_version"; then
-    die 'Flutter could not determine its framework version. The release clone is missing its numeric base tag.'
-  fi
-  "$root/bin/airreload" version
-  "$root/bin/airreload" --help >/dev/null
-  "$root/bin/airreload" doctor
+  local root=$1 version
+  version=$(AIRRELOAD_WORKSPACE="$root" AIRRELOAD_NO_UPDATE_CHECK=1 "$root/bin/airreload" version) || die 'CLI version validation failed.'
+  [[ "$version" == "Airreload ${cli_tag#v}" ]] || die "Unexpected CLI version: $version"
+  printf '%s\n' "$version"
+  AIRRELOAD_WORKSPACE="$root" AIRRELOAD_NO_UPDATE_CHECK=1 "$root/bin/airreload" --help >/dev/null
 }
 
 profile_files() {
@@ -213,7 +199,7 @@ done
 
 [[ $(uname -s) == Darwin ]] || die 'Airreload currently supports macOS only.'
 [[ $(uname -m) == arm64 ]] || die 'Airreload currently supports Apple Silicon (arm64) only.'
-for prerequisite in git openssl curl unzip; do
+for prerequisite in curl shasum; do
   command -v "$prerequisite" >/dev/null 2>&1 || die "Required command not found: $prerequisite"
 done
 [[ -f "$manifest" ]] || die "Version manifest not found: $manifest"
@@ -221,13 +207,11 @@ done
 cli_repository=$(manifest_value CLI_REPOSITORY) || die 'Invalid CLI_REPOSITORY in versions.env.'
 cli_tag=$(manifest_value CLI_TAG) || die 'Invalid CLI_TAG in versions.env.'
 cli_commit=$(manifest_value CLI_COMMIT) || die 'Invalid CLI_COMMIT in versions.env.'
-flutter_repository=$(manifest_value FLUTTER_REPOSITORY) || die 'Invalid FLUTTER_REPOSITORY in versions.env.'
-flutter_tag=$(manifest_value FLUTTER_TAG) || die 'Invalid FLUTTER_TAG in versions.env.'
-flutter_commit=$(manifest_value FLUTTER_COMMIT) || die 'Invalid FLUTTER_COMMIT in versions.env.'
+cli_sha256=$(manifest_value CLI_SHA256_MACOS_ARM64) || die 'Invalid CLI_SHA256_MACOS_ARM64 in versions.env.'
 [[ "$cli_repository" == 'https://github.com/Airreload/cli.git' ]] || die 'Unexpected CLI repository in versions.env.'
-[[ "$flutter_repository" == 'https://github.com/Airreload/flutter.git' ]] || die 'Unexpected Flutter repository in versions.env.'
-[[ "$cli_tag" =~ ^[A-Za-z0-9._-]+$ && "$flutter_tag" =~ ^[A-Za-z0-9._-]+$ ]] || die 'Invalid release tag in versions.env.'
-[[ "$cli_commit" =~ ^[0-9a-f]{40}$ && "$flutter_commit" =~ ^[0-9a-f]{40}$ ]] || die 'Invalid commit in versions.env.'
+[[ "$cli_tag" =~ ^v[0-9A-Za-z.+-]+$ ]] || die 'Invalid CLI release tag in versions.env.'
+[[ "$cli_commit" =~ ^[0-9a-f]{40}$ ]] || die 'Invalid CLI commit in versions.env.'
+[[ "$cli_sha256" =~ ^[0-9a-f]{64}$ ]] || die 'Invalid binary SHA-256 checksum in versions.env.'
 
 install_root=${AIRRELOAD_INSTALL_ROOT:-"$HOME/.airreload"}
 validate_root "$install_root"
@@ -250,19 +234,10 @@ trap cleanup EXIT
 rollback_dir=$(mktemp -d "$install_parent/.airreload-rollback.XXXXXX")
 
 printf 'Installing Airreload into %s\n' "$install_root"
-printf 'Cloning CLI %s...\n' "$cli_tag"
-clone_at_release "$cli_repository" "$cli_tag" "$cli_commit" "$stage_dir/cli" 1
-printf 'Cloning Flutter %s...\n' "$flutter_tag"
-clone_at_release "$flutter_repository" "$flutter_tag" "$flutter_commit" "$stage_dir/flutter" 2
-
-printf 'Bootstrapping Flutter and Dart...\n'
-"$stage_dir/flutter/bin/flutter" --version
-(
-  cd -- "$stage_dir/cli"
-  "$stage_dir/flutter/bin/dart" pub get
-)
-mkdir -p -- "$stage_dir/bin"
-write_launcher "$stage_dir/bin/airreload"
+printf 'Downloading Airreload %s...\n' "$cli_tag"
+# Keep the state parent for upgrades from source-based installations.
+mkdir -p -- "$stage_dir/bin" "$stage_dir/cli"
+install_binary "$stage_dir/bin/airreload"
 
 printf 'Validating staged installation...\n'
 validate_installation "$stage_dir"

@@ -8,8 +8,6 @@ repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 # The manifest path is resolved from the script's location at runtime.
 # shellcheck disable=SC1091
 source "$repo_root/versions.env"
-export AIRRELOAD_EXPECTED_CLI_COMMIT="$CLI_COMMIT"
-export AIRRELOAD_EXPECTED_FLUTTER_COMMIT="$FLUTTER_COMMIT"
 export AIRRELOAD_EXPECTED_CLI_VERSION="${CLI_TAG#v}"
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/airreload-installer-tests.XXXXXX")
 trap 'rm -rf -- "$test_root"' EXIT
@@ -46,92 +44,49 @@ cat >"$fake_bin/uname" <<'EOF'
 if [[ $1 == -s ]]; then printf '%s\n' "${FAKE_UNAME_S:-Darwin}"; else printf '%s\n' "${FAKE_UNAME_M:-arm64}"; fi
 EOF
 
-cat >"$fake_bin/openssl" <<'EOF'
+# Exercise the real SHA-256 verification with a small executable fixture.
+export AIRRELOAD_TEST_BINARY="$test_root/airreload-fixture"
+cat >"$AIRRELOAD_TEST_BINARY" <<'EOF'
 #!/usr/bin/env bash
-printf 'OpenSSL fake\n'
+set -euo pipefail
+case ${1:-} in
+  version) printf 'Airreload %s\n' "${FAKE_CLI_VERSION:-$AIRRELOAD_EXPECTED_CLI_VERSION}" ;;
+  --help)
+    if [[ ${FAKE_CLI_FAIL_HELP:-0} == 1 ]]; then exit 1; fi
+    if [[ ${FAKE_CLI_FAIL_FINAL_HELP:-0} == 1 && "$0" != *'.airreload-install.'* ]]; then exit 1; fi
+    printf 'Build and hot reload a Flutter Android app.\n'
+    ;;
+  *) printf 'unexpected CLI invocation: %s\n' "$*" >&2; exit 2 ;;
+esac
 EOF
-
 cat >"$fake_bin/curl" <<'EOF'
 #!/usr/bin/env bash
-exit 0
-EOF
-
-cat >"$fake_bin/unzip" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-
-cat >"$fake_bin/git" <<'EOF'
-#!/usr/bin/env bash
 set -euo pipefail
-if [[ $1 == clone ]]; then
-  depth=''
-  previous=''
-  for argument in "$@"; do
-    if [[ $previous == --depth ]]; then depth=$argument; fi
-    previous=$argument
-    destination=$argument
-  done
-  if [[ "$destination" == */flutter && $depth != 2 ]]; then
-    printf 'Flutter clone depth must be 2, found %s\n' "$depth" >&2
-    exit 2
-  fi
-  if [[ "$destination" == */cli && $depth != 1 ]]; then
-    printf 'CLI clone depth must be 1, found %s\n' "$depth" >&2
-    exit 2
-  fi
-  mkdir -p "$destination/bin"
-  if [[ "$destination" == */flutter ]]; then
-    cat >"$destination/bin/flutter" <<'FLUTTER'
-#!/usr/bin/env bash
-if [[ ${1:-} == --version && ${2:-} == --machine ]]; then
-  printf '{"frameworkVersion":"%s"}\n' "${FAKE_FLUTTER_FRAMEWORK_VERSION:-3.47.5}"
-elif [[ ${1:-} == attach && ${2:-} == --help ]]; then
-  printf 'Usage: flutter attach --airreload\n'
-else
-  printf 'Flutter 3.47.5 (fake)\n'
-fi
-FLUTTER
-    cat >"$destination/bin/dart" <<'DART'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ ${1:-} == pub && ${2:-} == get ]]; then
-  mkdir -p .dart_tool
-  printf '{}\n' >.dart_tool/package_config.json
-  exit 0
-fi
-command_name=''
-for argument in "$@"; do command_name=$argument; done
-case $command_name in
-  version) printf 'Airreload %s\n' "$AIRRELOAD_EXPECTED_CLI_VERSION" ;;
-  --help) printf 'Build and hot reload a Flutter Android app.\n' ;;
-  doctor)
-    if [[ ${FAKE_DART_FAIL_DOCTOR:-0} == 1 ]]; then exit 1; fi
-    if [[ ${FAKE_DART_FAIL_FINAL_DOCTOR:-0} == 1 && "$2" != *'.airreload-install.'* ]]; then exit 1; fi
-    printf 'OK  fake doctor\n'
-    ;;
-  *) printf 'unexpected fake Dart invocation: %s\n' "$*" >&2; exit 2 ;;
-esac
-DART
-    chmod +x "$destination/bin/flutter" "$destination/bin/dart"
-  else
-    cat >"$destination/bin/airreload.dart" <<'DART_SOURCE'
-void main() {}
-DART_SOURCE
-  fi
-  exit 0
-fi
-if [[ $1 == -C && $3 == rev-parse && $4 == HEAD ]]; then
-  if [[ $2 == */cli ]]; then
-    printf '%s\n' "${FAKE_CLI_COMMIT:-$AIRRELOAD_EXPECTED_CLI_COMMIT}"
-  else
-    printf '%s\n' "$AIRRELOAD_EXPECTED_FLUTTER_COMMIT"
-  fi
-  exit 0
-fi
-printf 'unexpected fake git invocation: %s\n' "$*" >&2
-exit 2
+if [[ ${FAKE_DOWNLOAD_FAIL:-0} == 1 ]]; then exit 22; fi
+previous=''
+for argument in "$@"; do
+  if [[ $previous == --output ]]; then destination=$argument; fi
+  previous=$argument
+  url=$argument
+ done
+[[ "$url" == "https://github.com/Airreload/cli/releases/download/v$AIRRELOAD_EXPECTED_CLI_VERSION/airreload-macos-arm64" ]]
+cp "$AIRRELOAD_TEST_BINARY" "$destination"
+if [[ ${FAKE_CORRUPT_DOWNLOAD:-0} == 1 ]]; then printf 'corrupt' >>"$destination"; fi
 EOF
+for tool in git dart flutter; do
+  cat >"$fake_bin/$tool" <<'EOF'
+#!/usr/bin/env bash
+printf 'Installer must not invoke Git, Dart, or Flutter.\n' >&2
+exit 99
+EOF
+ done
+fixture_repo="$test_root/installer"
+mkdir -p "$fixture_repo"
+cp "$repo_root/install.sh" "$repo_root/uninstall.sh" "$fixture_repo/"
+awk '!/^CLI_SHA256_/' "$repo_root/versions.env" >"$fixture_repo/versions.env"
+fixture_hash=$(shasum -a 256 "$AIRRELOAD_TEST_BINARY")
+printf 'CLI_SHA256_MACOS_ARM64=%s\n' "${fixture_hash%% *}" >>"$fixture_repo/versions.env"
+repo_root=$fixture_repo
 chmod +x "$fake_bin"/*
 
 run_install() {
@@ -152,7 +107,9 @@ printf 'keep-before\n' >"$profile"
 run_install
 assert_file "$install_root/.airreload-installer"
 assert_file "$install_root/bin/airreload"
-assert_file "$install_root/cli/.dart_tool/package_config.json"
+assert_not_exists "$install_root/cli/.dart_tool"
+assert_not_exists "$install_root/flutter"
+assert_not_exists "$install_root/sdks"
 assert_contains "$profile" '# >>> airreload installer >>>'
 assert_count 1 "$profile" '# >>> airreload installer >>>'
 "$install_root/bin/airreload" version | grep -F "$AIRRELOAD_EXPECTED_CLI_VERSION" >/dev/null
@@ -163,15 +120,17 @@ fi
 run_install --replace >/dev/null
 assert_count 1 "$profile" '# >>> airreload installer >>>'
 
-mkdir -p "$install_root/cli/.airreload" "$install_root/sdks/cached-sdk"
+mkdir -p "$install_root/cli/.airreload" "$install_root/sdks/cached-sdk" "$install_root/flutter" "$install_root/cli/.dart_tool"
 printf 'private-key-fixture\n' >"$install_root/cli/.airreload/host-key.pem"
 printf 'sdk-fixture\n' >"$install_root/sdks/cached-sdk/sentinel"
 cp "$profile" "$test_root/profile-before-update"
 run_install --replace --no-path --preserve-data >/dev/null
+assert_not_exists "$install_root/flutter"
+assert_not_exists "$install_root/cli/.dart_tool"
 assert_contains "$install_root/cli/.airreload/host-key.pem" 'private-key-fixture'
 assert_contains "$install_root/sdks/cached-sdk/sentinel" 'sdk-fixture'
 cmp "$profile" "$test_root/profile-before-update" || fail 'update changed shell profile'
-if FAKE_DART_FAIL_FINAL_DOCTOR=1 run_install --replace --no-path --preserve-data >/dev/null 2>&1; then
+if FAKE_CLI_FAIL_FINAL_HELP=1 run_install --replace --no-path --preserve-data >/dev/null 2>&1; then
   fail 'failed preserving update unexpectedly succeeded'
 fi
 assert_contains "$install_root/cli/.airreload/host-key.pem" 'private-key-fixture'
@@ -195,20 +154,20 @@ assert_file "$install_root/cli/.airreload/host-key.pem"
 rmdir "$test_root/.install.install-lock"
 
 printf 'preserve-me\n' >"$install_root/preserved"
-if FAKE_DART_FAIL_DOCTOR=1 run_install --replace >/dev/null 2>&1; then
-  fail 'failing staged doctor unexpectedly succeeded'
+if FAKE_CLI_FAIL_HELP=1 run_install --replace >/dev/null 2>&1; then
+  fail 'failing staged help unexpectedly succeeded'
 fi
 assert_file "$install_root/preserved"
 
-if FAKE_DART_FAIL_FINAL_DOCTOR=1 run_install --replace >/dev/null 2>&1; then
-  fail 'failing final doctor unexpectedly succeeded'
+if FAKE_CLI_FAIL_FINAL_HELP=1 run_install --replace >/dev/null 2>&1; then
+  fail 'failing final help unexpectedly succeeded'
 fi
 assert_file "$install_root/preserved"
 assert_contains "$profile" 'keep-before'
 assert_count 1 "$profile" '# >>> airreload installer >>>'
 
-if FAKE_FLUTTER_FRAMEWORK_VERSION=0.0.0-unknown run_install --replace >/dev/null 2>&1; then
-  fail 'unknown Flutter framework version unexpectedly passed validation'
+if FAKE_CLI_VERSION=0.0.0 run_install --replace >/dev/null 2>&1; then
+  fail 'wrong CLI version unexpectedly passed validation'
 fi
 assert_file "$install_root/preserved"
 assert_contains "$profile" 'keep-before'
@@ -231,8 +190,13 @@ fi
 assert_file "$install_root/sentinel"
 rm -rf -- "$install_root"
 
-if FAKE_CLI_COMMIT=0000000000000000000000000000000000000000 run_install >/dev/null 2>&1; then
-  fail 'commit mismatch unexpectedly succeeded'
+if FAKE_CORRUPT_DOWNLOAD=1 run_install >/dev/null 2>&1; then
+  fail 'checksum mismatch unexpectedly succeeded'
+fi
+assert_not_exists "$install_root"
+
+if FAKE_DOWNLOAD_FAIL=1 run_install >/dev/null 2>&1; then
+  fail 'failed download unexpectedly succeeded'
 fi
 assert_not_exists "$install_root"
 
