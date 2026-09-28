@@ -69,6 +69,12 @@ for argument in "$@"; do
   previous=$argument
   url=$argument
  done
+if [[ "$url" == 'https://github.com/Airreload/installer/archive/refs/heads/main.tar.gz' ]]; then
+  if [[ ${FAKE_ARCHIVE_FAIL:-0} == 1 ]]; then exit 22; fi
+  if [[ ${FAKE_ARCHIVE_CORRUPT:-0} == 1 ]]; then printf 'not an archive' >"$destination"; exit 0; fi
+  cp "$AIRRELOAD_TEST_ARCHIVE" "$destination"
+  exit 0
+fi
 [[ "$url" == "https://github.com/Airreload/cli/releases/download/v$AIRRELOAD_EXPECTED_CLI_VERSION/airreload-macos-arm64" ]]
 cp "$AIRRELOAD_TEST_BINARY" "$destination"
 if [[ ${FAKE_CORRUPT_DOWNLOAD:-0} == 1 ]]; then printf 'corrupt' >>"$destination"; fi
@@ -87,6 +93,10 @@ awk '!/^CLI_SHA256_/' "$repo_root/versions.env" >"$fixture_repo/versions.env"
 fixture_hash=$(shasum -a 256 "$AIRRELOAD_TEST_BINARY")
 printf 'CLI_SHA256_MACOS_ARM64=%s\n' "${fixture_hash%% *}" >>"$fixture_repo/versions.env"
 repo_root=$fixture_repo
+mkdir -p "$test_root/archive/installer-main" "$test_root/bootstrap-tmp"
+cp "$repo_root/install.sh" "$repo_root/versions.env" "$test_root/archive/installer-main/"
+export AIRRELOAD_TEST_ARCHIVE="$test_root/installer.tar.gz"
+tar -czf "$AIRRELOAD_TEST_ARCHIVE" -C "$test_root/archive" installer-main
 chmod +x "$fake_bin"/*
 
 run_install() {
@@ -205,5 +215,69 @@ if FAKE_UNAME_S=Linux run_install >/dev/null 2>&1; then
   fail 'unsupported platform unexpectedly succeeded'
 fi
 assert_not_exists "$install_root"
+
+run_stream_install() {
+  cat "$repo_root/install.sh" | PATH="$fake_bin:/usr/bin:/bin" \
+    TMPDIR="$test_root/bootstrap-tmp" \
+    AIRRELOAD_INSTALL_ROOT="$install_root" \
+    AIRRELOAD_TEST_PROFILE_FILE="$profile" \
+    bash -s -- "$@"
+}
+
+assert_bootstrap_clean() {
+  local entry
+  for entry in "$test_root/bootstrap-tmp"/*; do
+    [[ ! -e "$entry" ]] || fail "bootstrap left temporary files: $entry"
+  done
+}
+
+# Streamed installs must ignore any manifest in the current directory.
+mkdir -p "$test_root/untrusted"
+printf 'CLI_TAG=do-not-use\n' >"$test_root/untrusted/versions.env"
+cp "$profile" "$test_root/profile-before-pipe"
+(cd "$test_root/untrusted" && run_stream_install --no-path) >"$test_root/pipe-output"
+assert_file "$install_root/bin/airreload"
+assert_not_exists "$install_root/flutter"
+assert_contains "$test_root/pipe-output" 'Fetching Airreload installer'
+assert_contains "$test_root/pipe-output" 'Verified download'
+cmp "$profile" "$test_root/profile-before-pipe" || fail '--no-path was not forwarded'
+assert_bootstrap_clean
+
+mkdir -p "$install_root/cli/.airreload" "$install_root/sdks/cached"
+printf 'pairing-fixture\n' >"$install_root/cli/.airreload/key"
+printf 'sdk-fixture\n' >"$install_root/sdks/cached/sentinel"
+run_stream_install --replace --preserve-data --no-path >/dev/null
+assert_contains "$install_root/cli/.airreload/key" 'pairing-fixture'
+assert_contains "$install_root/sdks/cached/sentinel" 'sdk-fixture'
+assert_bootstrap_clean
+if FAKE_CLI_FAIL_HELP=1 run_stream_install --replace --preserve-data >/dev/null 2>&1; then
+  fail 'piped installation did not propagate child failure'
+fi
+assert_contains "$install_root/cli/.airreload/key" 'pairing-fixture'
+assert_bootstrap_clean
+run_uninstall >/dev/null
+
+for failure in FAKE_ARCHIVE_FAIL FAKE_ARCHIVE_CORRUPT; do
+  export "$failure=1"
+  if run_stream_install --no-path >/dev/null 2>&1; then
+    fail 'failed bootstrap unexpectedly succeeded'
+  fi
+  unset "$failure"
+  assert_not_exists "$install_root"
+  assert_bootstrap_clean
+done
+FAKE_ARCHIVE_FAIL=1 run_stream_install --help >/dev/null
+assert_not_exists "$install_root"
+assert_bootstrap_clean
+
+# A standalone downloaded script also fetches its missing companion manifest.
+mkdir -p "$test_root/standalone"
+cp "$repo_root/install.sh" "$test_root/standalone/install.sh"
+PATH="$fake_bin:/usr/bin:/bin" TMPDIR="$test_root/bootstrap-tmp" \
+  AIRRELOAD_INSTALL_ROOT="$install_root" AIRRELOAD_TEST_PROFILE_FILE="$profile" \
+  bash "$test_root/standalone/install.sh" --no-path >/dev/null
+assert_file "$install_root/bin/airreload"
+assert_bootstrap_clean
+run_uninstall >/dev/null
 
 printf 'All installer tests passed.\n'
