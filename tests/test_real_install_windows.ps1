@@ -22,7 +22,7 @@ if ($Phase -eq 'Removed') {
 }
 
 $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$gitDirectory = Split-Path -Parent (Get-Command git.exe -CommandType Application -ErrorAction Stop).Source
+$gitDirectory = Split-Path -Parent (Get-Command git.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $systemPath = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\Wbem;$(Split-Path -Parent $powerShell)"
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) "airreload smoke $([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $testRoot | Out-Null
