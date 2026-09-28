@@ -217,6 +217,8 @@ fi
 assert_not_exists "$install_root"
 
 run_stream_install() {
+  # Exercise an actual pipe, matching curl | bash rather than file redirection.
+  # shellcheck disable=SC2002
   cat "$repo_root/install.sh" | PATH="$fake_bin:/usr/bin:/bin" \
     TMPDIR="$test_root/bootstrap-tmp" \
     AIRRELOAD_INSTALL_ROOT="$install_root" \
