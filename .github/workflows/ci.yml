@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+  workflow_dispatch:
   push:
     branches: [main]
 
@@ -19,6 +20,24 @@ jobs:
         run: shellcheck install.sh uninstall.sh tests/test_installer.sh
       - name: Run isolated tests
         run: bash tests/test_installer.sh
+
+  powershell:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check PowerShell syntax
+        shell: powershell
+        run: |
+          $allErrors = foreach ($file in (Get-ChildItem -Path . -Filter *.ps1 -Recurse).FullName) {
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$parseErrors)
+            $parseErrors
+          }
+          if ($allErrors) { $allErrors | Format-List; exit 1 }
+      - name: Run isolated Windows tests
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\test_installer.ps1
 
   real-install:
     runs-on: macos-15
@@ -42,3 +61,17 @@ jobs:
         run: |
           ./uninstall.sh --yes
           test ! -e "$AIRRELOAD_INSTALL_ROOT"
+
+  real-install-windows:
+    name: Windows install (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify first install, saved PATH, and uninstall with restricted tools
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\test_real_install_windows.ps1
