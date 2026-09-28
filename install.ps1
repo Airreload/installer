@@ -41,6 +41,17 @@ function Remove-OwnedDirectory {
     Remove-Item -LiteralPath $Path -Recurse -Force
 }
 
+function Move-OwnedDirectory {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Destination
+    )
+
+    if (-not (Test-OwnedDirectory -Path $Source)) { throw "Refusing to move unowned directory: $Source" }
+    if (Test-Path -LiteralPath $Destination) { throw "Refusing to replace existing destination: $Destination" }
+    [IO.Directory]::Move($Source, $Destination)
+}
+
 function Invoke-GitClone {
     param(
         [Parameter(Mandatory)][string]$Repository,
@@ -176,9 +187,9 @@ try {
 
     if (Test-Path -LiteralPath $installRoot) {
         $backupDirectory = Join-Path $installParent ".airreload-backup.$([guid]::NewGuid().ToString('N'))"
-        Move-Item -LiteralPath $installRoot -Destination $backupDirectory
+        Move-OwnedDirectory -Source $installRoot -Destination $backupDirectory
     }
-    Move-Item -LiteralPath $stageDirectory -Destination $installRoot
+    Move-OwnedDirectory -Source $stageDirectory -Destination $installRoot
     $stageDirectory = $null
     $installCommitted = $true
 
@@ -213,7 +224,7 @@ catch {
     if ($pathChanged) { Set-UserPath -Value $originalUserPath }
     if ($installCommitted -and (Test-OwnedDirectory -Path $installRoot)) { Remove-OwnedDirectory -Path $installRoot }
     if ($backupDirectory -and (Test-Path -LiteralPath $backupDirectory) -and -not (Test-Path -LiteralPath $installRoot)) {
-        Move-Item -LiteralPath $backupDirectory -Destination $installRoot
+        Move-OwnedDirectory -Source $backupDirectory -Destination $installRoot
         $backupDirectory = $null
     }
     throw

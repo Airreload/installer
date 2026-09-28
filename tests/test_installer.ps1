@@ -51,6 +51,12 @@ if ($args[0] -eq 'config' -and $args[1] -eq '--global' -and $args[2] -eq 'core.l
 if ($args[0] -eq 'clone') {
     $destination = $args[-1]
     New-Item -ItemType Directory -Path (Join-Path $destination 'bin') -Force | Out-Null
+    $gitDirectory = New-Item -ItemType Directory -Path (Join-Path $destination '.git') -Force
+    $gitDirectory.Attributes = $gitDirectory.Attributes -bor [IO.FileAttributes]::Hidden
+    $readOnlyGitFile = Join-Path $gitDirectory.FullName 'config'
+    Set-Content -LiteralPath $readOnlyGitFile -Value 'fake git metadata' -NoNewline
+    $gitFile = Get-Item -Force -LiteralPath $readOnlyGitFile
+    $gitFile.Attributes = $gitFile.Attributes -bor [IO.FileAttributes]::ReadOnly
     if ((Split-Path -Leaf $destination) -eq 'flutter') {
         $flutter = @"
 @echo off
